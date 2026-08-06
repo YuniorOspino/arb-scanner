@@ -8,7 +8,6 @@ import signal
 import sys
 import time
 
-from alerts.formatter import format_arbitrage_alert
 from alerts.telegram import (
     TelegramAlerter,
     format_alert,
@@ -52,33 +51,52 @@ def send_startup_message(alerter: TelegramAlerter | None) -> None:
 
 
 def _opportunity_to_event(opp: ArbitrageOpportunity) -> dict:
-    from core.arbitrage import calculate_dynamic_stake
+    import re
+
+    from core.arbitrage import calculate_arbitrage_stakes, calculate_dynamic_stake
+
+    parts = re.split(r"\s+vs\.?\s+|\s+v\.?\s+|\s+-\s+", opp.event_name, flags=re.IGNORECASE)
+    local = parts[0].strip() if len(parts) >= 2 else "equipo local"
+    away = parts[1].strip() if len(parts) >= 2 else "equipo visitante"
+
+    outcome_label = {
+        "home": f"que gana {local}",
+        "1": f"que gana {local}",
+        "draw": "empate",
+        "x": "empate",
+        "away": f"que gana {away}",
+        "2": f"que gana {away}",
+    }
+
+    dynamic_stake = calculate_dynamic_stake(opp.profit_percent)
+    odds_map = {outcome: odds for _book, outcome, odds, _stake in opp.legs}
+    stakes_info = calculate_arbitrage_stakes(
+        odds_map, dynamic_stake, labels=list(odds_map.keys())
+    )
+    stakes_by_outcome = stakes_info.get("stakes", {})
 
     books = []
+    outcomes: dict[str, str] = {}
+    stakes_by_book: dict[str, float] = {}
     seen = set()
-    for book, _outcome, _odds, _stake in opp.legs:
+
+    for book, outcome, _odds, _stake in opp.legs:
+        label = outcome_label.get(str(outcome).lower(), str(outcome))
         if book not in seen:
             seen.add(book)
             books.append(book)
-
-    dynamic_stake = calculate_dynamic_stake(opp.profit_percent)
-    detail_payload = {
-        "evento": opp.event_name,
-        "profit_percent": opp.profit_percent,
-        "total_stake": dynamic_stake,
-        "casas_involucradas": books,
-        "mejores_cuotas": {
-            outcome: {"casa": book, "cuota": odds}
-            for book, outcome, odds, _stake in opp.legs
-        },
-        "legs": opp.legs,
-    }
+        outcomes[book] = label
+        stakes_by_book[book] = float(
+            stakes_by_outcome.get(outcome, stakes_by_outcome.get(str(outcome).lower(), 0))
+            or (dynamic_stake / max(len(opp.legs), 1))
+        )
 
     return {
         "match": opp.event_name,
         "books": books,
+        "outcomes": outcomes,
+        "stakes": stakes_by_book,
         "stake": dynamic_stake,
-        "detail": format_arbitrage_alert(detail_payload),
     }
 
 

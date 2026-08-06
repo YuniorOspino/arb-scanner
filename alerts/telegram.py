@@ -17,7 +17,7 @@ RENTABLE_THRESHOLD = 1.50
 
 
 def format_alert(event: dict, profit: float) -> str:
-    """Build Telegram message with profit classification and dynamic stake."""
+    """Build Telegram message with classification, stake and betting instructions."""
     from core.arbitrage import calculate_dynamic_stake
 
     profit_f = float(profit)
@@ -28,23 +28,40 @@ def format_alert(event: dict, profit: float) -> str:
 
     books = event.get("books") or []
     if isinstance(books, str):
+        books_list = [b.strip() for b in books.split(",") if b.strip()]
         books_str = books
     else:
-        books_str = ", ".join(str(b) for b in books)
+        books_list = list(books)
+        books_str = ", ".join(str(b) for b in books_list)
 
-    message = (
+    outcomes = event.get("outcomes") or {}
+    stakes_by_book = event.get("stakes") or {}
+
+    instruction_lines = []
+    for book in books_list:
+        outcome = outcomes.get(book) or outcomes.get(str(book).lower()) or "resultado"
+        book_stake = stakes_by_book.get(book, stakes_by_book.get(str(book).lower(), stake))
+        try:
+            book_stake_f = float(book_stake)
+        except (TypeError, ValueError):
+            book_stake_f = stake
+        instruction_lines.append(
+            f"- {book}: {book_stake_f:.0f} COP a {outcome}"
+        )
+
+    if not instruction_lines:
+        instruction_lines = [f"- Stake total sugerido: {stake:.0f} COP"]
+
+    instructions = "\n".join(instruction_lines)
+
+    return (
         f"{status}\n"
         f"Evento: {event.get('match', 'Evento desconocido')}\n"
         f"Casas: {books_str}\n"
         f"Profit: {profit_f:.2f}%\n"
-        f"Stake sugerido: {stake:.0f} COP"
+        f"Stake sugerido: {stake:.0f} COP\n\n"
+        f"👉 Apuesta:\n{instructions}"
     )
-
-    detail = event.get("detail")
-    if detail:
-        message = f"{message}\n\n{detail}"
-
-    return message
 
 
 def send_telegram_message(
@@ -129,50 +146,70 @@ def send_arbitrage_alert_telegram(
     *,
     timeout: float = 15.0,
 ) -> bool:
-    from core.arbitrage import calculate_dynamic_stake
+    import re
+
+    from core.arbitrage import calculate_arbitrage_stakes, calculate_dynamic_stake
 
     if isinstance(opportunity, ArbitrageOpportunity):
         profit = float(opportunity.profit_percent)
         stake = calculate_dynamic_stake(profit)
-        books = []
+        parts = re.split(
+            r"\s+vs\.?\s+|\s+v\.?\s+|\s+-\s+",
+            opportunity.event_name,
+            flags=re.IGNORECASE,
+        )
+        local = parts[0].strip() if len(parts) >= 2 else "equipo local"
+        visitante = parts[1].strip() if len(parts) >= 2 else "equipo visitante"
+        labels = {
+            "home": f"que gana {local}",
+            "draw": "empate",
+            "away": f"que gana {visitante}",
+        }
+        odds_map = {o: od for _b, o, od, _s in opportunity.legs}
+        stakes_by_outcome = calculate_arbitrage_stakes(
+            odds_map, stake, labels=list(odds_map.keys())
+        ).get("stakes", {})
+
+        books, outcomes, stakes_by_book = [], {}, {}
         seen = set()
-        for book, _o, _od, _s in opportunity.legs:
+        for book, outcome, _od, _s in opportunity.legs:
             if book not in seen:
                 seen.add(book)
                 books.append(book)
-        detail_payload = {
-            "evento": opportunity.event_name,
-            "profit_percent": profit,
-            "total_stake": stake,
-            "casas_involucradas": books,
-            "mejores_cuotas": {
-                outcome: {"casa": book, "cuota": odds}
-                for book, outcome, odds, _stake in opportunity.legs
-            },
-        }
+            outcomes[book] = labels.get(str(outcome).lower(), str(outcome))
+            stakes_by_book[book] = float(
+                stakes_by_outcome.get(outcome, stake / max(len(opportunity.legs), 1))
+            )
         event = {
             "match": opportunity.event_name,
             "books": books,
+            "outcomes": outcomes,
+            "stakes": stakes_by_book,
             "stake": stake,
-            "detail": format_arbitrage_alert(detail_payload),
         }
     else:
         profit = float(
             opportunity.get("profit_percent", opportunity.get("margen", 0)) or 0
         )
         stake = calculate_dynamic_stake(profit)
-        books = (
+        books = list(
             opportunity.get("casas_involucradas")
             or opportunity.get("casas")
             or []
         )
-        detail_payload = dict(opportunity)
-        detail_payload["total_stake"] = stake
+        mejores = opportunity.get("mejores_cuotas") or {}
+        outcomes = opportunity.get("outcomes") or {}
+        stakes_by_book = opportunity.get("stakes") or {}
+        if isinstance(mejores, dict) and not outcomes:
+            for outcome, info in mejores.items():
+                if isinstance(info, dict) and info.get("casa"):
+                    outcomes[str(info["casa"])] = str(outcome)
         event = {
             "match": opportunity.get("evento") or opportunity.get("event_name", "?"),
             "books": books,
+            "outcomes": outcomes,
+            "stakes": stakes_by_book if isinstance(stakes_by_book, dict) else {},
             "stake": stake,
-            "detail": format_arbitrage_alert(detail_payload),
         }
 
     message = format_alert(event, profit)
