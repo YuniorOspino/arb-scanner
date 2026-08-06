@@ -7,7 +7,7 @@ import os
 
 import requests
 
-from alerts.formatter import format_arbitrage_alert, format_value_bet_alert
+from alerts.formatter import format_value_bet_alert
 from core.models import ArbitrageOpportunity
 
 logger = logging.getLogger(__name__)
