@@ -17,30 +17,27 @@ RENTABLE_THRESHOLD = 1.50
 
 
 def format_alert(event: dict, profit: float) -> str:
-    """Build Telegram message with profit classification status."""
+    """Build Telegram message with profit classification and dynamic stake."""
+    from core.arbitrage import calculate_dynamic_stake
+
+    profit_f = float(profit)
+    stake = calculate_dynamic_stake(profit_f)
     status = (
-        "✅ Cuota rentable"
-        if float(profit) >= RENTABLE_THRESHOLD
-        else "⚠️ Cuota poco rentable"
+        "✅ Cuota rentable" if profit_f >= RENTABLE_THRESHOLD else "⚠️ Cuota poco rentable"
     )
+
     books = event.get("books") or []
     if isinstance(books, str):
         books_str = books
     else:
         books_str = ", ".join(str(b) for b in books)
 
-    stake = event.get("stake", "N/A")
-    if isinstance(stake, (int, float)):
-        stake_str = f"{int(round(float(stake) / 10.0) * 10):,} COP"
-    else:
-        stake_str = str(stake)
-
     message = (
         f"{status}\n"
         f"Evento: {event.get('match', 'Evento desconocido')}\n"
         f"Casas: {books_str}\n"
-        f"Profit: {float(profit):.2f}%\n"
-        f"Stake: {stake_str}"
+        f"Profit: {profit_f:.2f}%\n"
+        f"Stake sugerido: {stake:.0f} COP"
     )
 
     detail = event.get("detail")
@@ -132,28 +129,51 @@ def send_arbitrage_alert_telegram(
     *,
     timeout: float = 15.0,
 ) -> bool:
+    from core.arbitrage import calculate_dynamic_stake
+
     if isinstance(opportunity, ArbitrageOpportunity):
+        profit = float(opportunity.profit_percent)
+        stake = calculate_dynamic_stake(profit)
+        books = []
+        seen = set()
+        for book, _o, _od, _s in opportunity.legs:
+            if book not in seen:
+                seen.add(book)
+                books.append(book)
+        detail_payload = {
+            "evento": opportunity.event_name,
+            "profit_percent": profit,
+            "total_stake": stake,
+            "casas_involucradas": books,
+            "mejores_cuotas": {
+                outcome: {"casa": book, "cuota": odds}
+                for book, outcome, odds, _stake in opportunity.legs
+            },
+        }
         event = {
             "match": opportunity.event_name,
-            "books": [leg[0] for leg in opportunity.legs],
-            "stake": opportunity.total_stake,
-            "detail": format_arbitrage_alert(opportunity),
+            "books": books,
+            "stake": stake,
+            "detail": format_arbitrage_alert(detail_payload),
         }
-        profit = opportunity.profit_percent
     else:
-        event = {
-            "match": opportunity.get("evento") or opportunity.get("event_name", "?"),
-            "books": opportunity.get("casas_involucradas")
-            or opportunity.get("casas")
-            or [],
-            "stake": opportunity.get("total_stake")
-            or opportunity.get("total_investment")
-            or "N/A",
-            "detail": format_arbitrage_alert(opportunity),
-        }
         profit = float(
             opportunity.get("profit_percent", opportunity.get("margen", 0)) or 0
         )
+        stake = calculate_dynamic_stake(profit)
+        books = (
+            opportunity.get("casas_involucradas")
+            or opportunity.get("casas")
+            or []
+        )
+        detail_payload = dict(opportunity)
+        detail_payload["total_stake"] = stake
+        event = {
+            "match": opportunity.get("evento") or opportunity.get("event_name", "?"),
+            "books": books,
+            "stake": stake,
+            "detail": format_arbitrage_alert(detail_payload),
+        }
 
     message = format_alert(event, profit)
     return _post_telegram(bot_token, chat_id, message, timeout=timeout)

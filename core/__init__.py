@@ -3,6 +3,7 @@
 from core.arbitrage import (
     calculate_arbitrage,
     calculate_arbitrage_stakes,
+    calculate_dynamic_stake,
     calculate_kelly_stake,
     calculate_market_consensus,
     detect_three_way_arbitrage,
@@ -21,6 +22,7 @@ __all__ = [
     "OddsQuote",
     "calculate_arbitrage",
     "calculate_arbitrage_stakes",
+    "calculate_dynamic_stake",
     "calculate_kelly_stake",
     "calculate_market_consensus",
     "detect_three_way_arbitrage",

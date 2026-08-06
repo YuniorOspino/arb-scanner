@@ -52,17 +52,33 @@ def send_startup_message(alerter: TelegramAlerter | None) -> None:
 
 
 def _opportunity_to_event(opp: ArbitrageOpportunity) -> dict:
+    from core.arbitrage import calculate_dynamic_stake
+
     books = []
     seen = set()
     for book, _outcome, _odds, _stake in opp.legs:
         if book not in seen:
             seen.add(book)
             books.append(book)
+
+    dynamic_stake = calculate_dynamic_stake(opp.profit_percent)
+    detail_payload = {
+        "evento": opp.event_name,
+        "profit_percent": opp.profit_percent,
+        "total_stake": dynamic_stake,
+        "casas_involucradas": books,
+        "mejores_cuotas": {
+            outcome: {"casa": book, "cuota": odds}
+            for book, outcome, odds, _stake in opp.legs
+        },
+        "legs": opp.legs,
+    }
+
     return {
         "match": opp.event_name,
         "books": books,
-        "stake": opp.total_stake,
-        "detail": format_arbitrage_alert(opp),
+        "stake": dynamic_stake,
+        "detail": format_arbitrage_alert(detail_payload),
     }
 
 

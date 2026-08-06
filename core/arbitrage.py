@@ -16,6 +16,13 @@ def implied_probability(odds: float) -> float:
     return 1.0 / odds
 
 
+def calculate_dynamic_stake(profit: float) -> float:
+    """Assign stake in COP based on profit classification."""
+    if float(profit) >= 1.50:
+        return 50000.0
+    return 10000.0
+
+
 def calculate_kelly_stake(
     bankroll: float,
     odds: float,
