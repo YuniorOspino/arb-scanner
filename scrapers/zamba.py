@@ -7,30 +7,30 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-BETPLAY_URL = "https://www.betplay.com.co/api/sport/football/fixtures"
+ZAMBA_URL = "https://www.zamba.co/api/sport/football/fixtures"
 TIMEOUT = 15.0
 
 
-def scrape_betplay() -> list[dict[str, Any]]:
+def scrape_zamba() -> list[dict[str, Any]]:
     try:
         response = requests.get(
-            BETPLAY_URL,
+            ZAMBA_URL,
             timeout=TIMEOUT,
             headers={"User-Agent": "arb-scanner/1.0"},
         )
         response.raise_for_status()
         payload = response.json()
-        events = _parse_betplay_payload(payload)
+        events = _parse_payload(payload)
         if events:
-            logger.info("BetPlay scrape returned %d events", len(events))
+            logger.info("Zamba scrape returned %d events", len(events))
             return events
     except (requests.RequestException, ValueError, TypeError, KeyError):
-        logger.exception("BetPlay live scrape failed; using mock data")
+        logger.exception("Zamba live scrape failed; using mock data")
 
-    return _mock_betplay_events()
+    return _mock_zamba_events()
 
 
-def _parse_betplay_payload(payload: Any) -> list[dict[str, Any]]:
+def _parse_payload(payload: Any) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     raw_events = payload.get("events") if isinstance(payload, dict) else None
     if not isinstance(raw_events, list):
@@ -70,26 +70,26 @@ def _parse_betplay_payload(payload: Any) -> list[dict[str, Any]]:
     return events
 
 
-def _mock_betplay_events() -> list[dict[str, Any]]:
+def _mock_zamba_events() -> list[dict[str, Any]]:
     return [
         {
             "event": "EquipoA vs EquipoB",
             "market": "1X2",
-            "odds": {"home": 2.0, "draw": 3.1, "away": 3.5},
+            "odds": {"home": 2.05, "draw": 3.45, "away": 3.25},
         },
         {
             "event": "Colombia vs Brasil",
             "market": "1X2",
-            "odds": {"home": 2.90, "draw": 3.30, "away": 2.50},
+            "odds": {"home": 2.80, "draw": 3.40, "away": 2.70},
         },
     ]
 
 
-class BetPlayScraper:
-    bookmaker_name = "betplay"
+class ZambaScraper:
+    bookmaker_name = "zamba"
 
     def scrape(self) -> list[dict[str, Any]]:
-        return scrape_betplay()
+        return scrape_zamba()
 
     def fetch_odds(self):
         from core.models import OddsQuote

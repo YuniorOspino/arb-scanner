@@ -21,34 +21,25 @@ from core.value_betting import (
     calculate_market_consensus,
     detect_value_bet,
 )
-from scrapers import bet365, betano, betplay, draftkings, fanduel, wplay
+from scrapers.betano import BetanoScraper
+from scrapers.betplay import BetPlayScraper
+from scrapers.codere import CodereScraper
+from scrapers.rushbet import RushBetScraper
+from scrapers.wplay import WplayScraper
+from scrapers.zamba import ZambaScraper
 from storage.arb_history import save_arbitrage_opportunity
 from storage.value_bet_history import save_value_bet
 
 logger = logging.getLogger(__name__)
 
-
-def _quotes_from_class_scraper(scraper_cls: type, bookmaker: str) -> list[dict[str, Any]]:
-    scraper = scraper_cls()
-    by_event: dict[tuple[str, str], dict[str, float]] = defaultdict(dict)
-    for q in scraper.fetch_odds():
-        by_event[(q.event_name, q.market_id or "1X2")][q.outcome] = float(q.odds)
-    events: list[dict[str, Any]] = []
-    for (event_name, market), odds_map in by_event.items():
-        if {"home", "draw", "away"} <= set(odds_map):
-            events.append(
-                {
-                    "event": event_name,
-                    "market": market,
-                    "bookmaker": bookmaker,
-                    "odds": {
-                        "home": odds_map["home"],
-                        "draw": odds_map["draw"],
-                        "away": odds_map["away"],
-                    },
-                }
-            )
-    return events
+scrapers = [
+    BetPlayScraper(),
+    WplayScraper(),
+    BetanoScraper(),
+    RushBetScraper(),
+    ZambaScraper(),
+    CodereScraper(),
+]
 
 
 def _to_market_odds(quotes: list[dict[str, Any]]) -> dict[str, dict[str, dict[str, float]]]:
@@ -68,24 +59,21 @@ def _to_market_odds(quotes: list[dict[str, Any]]) -> dict[str, dict[str, dict[st
 def run_once() -> list[dict[str, Any]]:
     quotes: list[dict[str, Any]] = []
 
-    quotes.extend(_quotes_from_class_scraper(bet365.Bet365Scraper, "bet365"))
-    quotes.extend(_quotes_from_class_scraper(draftkings.DraftKingsScraper, "draftkings"))
-    quotes.extend(_quotes_from_class_scraper(fanduel.FanDuelScraper, "fanduel"))
-
-    start = len(quotes)
-    quotes.extend(betano.scrape_betano())
-    for q in quotes[start:]:
-        q["bookmaker"] = "betano"
-
-    start = len(quotes)
-    quotes.extend(wplay.scrape_wplay())
-    for q in quotes[start:]:
-        q["bookmaker"] = "wplay"
-
-    start = len(quotes)
-    quotes.extend(betplay.scrape_betplay())
-    for q in quotes[start:]:
-        q["bookmaker"] = "betplay"
+    for scraper in scrapers:
+        try:
+            events = scraper.scrape()
+            logger.info("Got %d events from %s", len(events), scraper.bookmaker_name)
+            for event in events:
+                quotes.append(
+                    {
+                        "event": event["event"],
+                        "market": event.get("market", "1X2"),
+                        "bookmaker": scraper.bookmaker_name,
+                        "odds": event["odds"],
+                    }
+                )
+        except Exception:
+            logger.exception("Scraper failed: %s", scraper.bookmaker_name)
 
     logger.info("Collected %d quote blocks from all books", len(quotes))
     market_odds = _to_market_odds(quotes)
@@ -123,11 +111,12 @@ def run_once() -> list[dict[str, Any]]:
 def main() -> int:
     setup_logging()
     logger.info(
-        "Pipeline start | investment=%.2f threshold=%.2f%% db=%s tg=%s",
+        "Pipeline start | investment=%.2f threshold=%.2f%% db=%s tg=%s books=%s",
         TOTAL_INVESTMENT,
         MIN_MARGIN_THRESHOLD,
         DB_PATH,
         bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
+        [s.bookmaker_name for s in scrapers],
     )
 
     opportunities = run_once()
