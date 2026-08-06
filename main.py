@@ -41,6 +41,7 @@ def run_scan_cycle() -> None:
     if _scanner is None:
         raise RuntimeError("Scanner not initialized")
 
+    # Scrapers que devuelven [] se omiten dentro de ArbScanner.collect_quotes
     opportunities = _scanner.run_once()
     if opportunities:
         logger.info("Ciclo con %d oportunidad(es)", len(opportunities))

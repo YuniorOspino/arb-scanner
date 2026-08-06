@@ -8,7 +8,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 CODERE_URL = "https://www.codere.com.co/api/sport/football/fixtures"
-TIMEOUT = 15.0
+TIMEOUT = 10.0
 
 
 def scrape_codere() -> list[dict[str, Any]]:
@@ -19,18 +19,22 @@ def scrape_codere() -> list[dict[str, Any]]:
             headers={"User-Agent": "arb-scanner/1.0"},
         )
         response.raise_for_status()
-        payload = response.json()
-        events = _parse_payload(payload)
-        if events:
-            logger.info("Codere scrape returned %d events", len(events))
-            return events
-    except (requests.RequestException, ValueError, TypeError, KeyError):
-        logger.exception("Codere live scrape failed; using mock data")
+        data = response.json()
+        events = parse_codere_data(data)
+        logger.info("Codere scrape returned %d events", len(events))
+        return events
+    except requests.exceptions.HTTPError as e:
+        logger.warning("Codere API error: %s", e)
+        return []
+    except requests.exceptions.RequestException as e:
+        logger.warning("Codere request failed: %s", e)
+        return []
+    except Exception as e:
+        logger.error("Unexpected error in Codere scraper: %s", e)
+        return []
 
-    return _mock_codere_events()
 
-
-def _parse_payload(payload: Any) -> list[dict[str, Any]]:
+def parse_codere_data(payload: Any) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     raw_events = payload.get("events") if isinstance(payload, dict) else None
     if not isinstance(raw_events, list):
@@ -68,21 +72,6 @@ def _parse_payload(payload: Any) -> list[dict[str, Any]]:
                 }
             )
     return events
-
-
-def _mock_codere_events() -> list[dict[str, Any]]:
-    return [
-        {
-            "event": "EquipoA vs EquipoB",
-            "market": "1X2",
-            "odds": {"home": 2.20, "draw": 3.05, "away": 3.40},
-        },
-        {
-            "event": "Colombia vs Brasil",
-            "market": "1X2",
-            "odds": {"home": 2.75, "draw": 3.50, "away": 2.65},
-        },
-    ]
 
 
 class CodereScraper:
