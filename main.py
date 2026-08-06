@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import signal
 import sys
 import time
@@ -18,6 +19,12 @@ logger = logging.getLogger(__name__)
 _shutdown = False
 _scanner: ArbScanner | None = None
 
+# Prefer Railway-style TELEGRAM_TOKEN; fall back to TELEGRAM_BOT_TOKEN
+TELEGRAM_TOKEN = (
+    os.getenv("TELEGRAM_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or ""
+).strip()
+TELEGRAM_CHAT_ID = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+
 
 def _handle_signal(signum: int, _frame: object) -> None:
     global _shutdown
@@ -25,8 +32,12 @@ def _handle_signal(signum: int, _frame: object) -> None:
     _shutdown = True
 
 
-def send_startup_message(alerter: TelegramAlerter) -> None:
+def send_startup_message(alerter: TelegramAlerter | None) -> None:
     """Envía confirmación a Telegram al iniciar el motor."""
+    if alerter is None or not alerter.enabled:
+        logger.warning("Skipping startup Telegram message (alerter disabled)")
+        return
+
     ok = alerter.send_message(
         "El motor arb-scanner inicio y esta buscando oportunidades."
     )
@@ -49,6 +60,24 @@ def run_scan_cycle() -> None:
         logger.info("No se encontraron oportunidades en este ciclo.")
 
 
+def _build_alerter() -> TelegramAlerter | None:
+    token = TELEGRAM_TOKEN
+    chat_id = TELEGRAM_CHAT_ID
+
+    if not token or not chat_id:
+        logger.error(
+            "Missing TELEGRAM variables. Please set TELEGRAM_TOKEN "
+            "(or TELEGRAM_BOT_TOKEN) and TELEGRAM_CHAT_ID in Railway."
+        )
+        return None
+
+    return TelegramAlerter(
+        bot_token=token,
+        chat_id=chat_id,
+        enabled=True,
+    )
+
+
 def main() -> int:
     global _scanner
 
@@ -57,12 +86,11 @@ def main() -> int:
 
     logger.info("arb-scanner starting")
     logger.info(
-        "Config: interval=%ss min_profit=%.2f%% stake=%.2f books=%s tg=%s",
+        "Config: interval=%ss min_profit=%.2f%% stake=%.2f books=%s",
         cfg.scan_interval_seconds,
         cfg.min_profit_percent,
         cfg.max_stake_total,
         ", ".join(cfg.active_bookmakers),
-        cfg.telegram_enabled,
     )
     logger.debug("Database path: %s", cfg.database_path)
 
@@ -72,11 +100,7 @@ def main() -> int:
         return 1
 
     store = OpportunityStore(cfg.database_path)
-    alerter = TelegramAlerter(
-        bot_token=cfg.telegram_bot_token,
-        chat_id=cfg.telegram_chat_id,
-        enabled=cfg.telegram_enabled,
-    )
+    alerter = _build_alerter()
     _scanner = ArbScanner(cfg, scrapers, store, alerter)
 
     send_startup_message(alerter)

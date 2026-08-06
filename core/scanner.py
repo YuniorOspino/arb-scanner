@@ -37,10 +37,13 @@ class ArbScanner:
             try:
                 logger.info("Scraping %s ...", name)
                 batch = scraper.fetch_odds()
+                if not batch:
+                    logger.warning("Skipping %s: empty quotes (no fresh data)", name)
+                    continue
                 logger.info("Got %d quotes from %s", len(batch), name)
                 quotes.extend(batch)
             except Exception:
-                logger.exception("Scraper failed: %s", name)
+                logger.exception("Scraper failed: %s — skipping", name)
         return quotes
 
     def group_markets(self, quotes: list[OddsQuote]) -> list[MarketOdds]:

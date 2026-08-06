@@ -62,6 +62,12 @@ def run_once() -> list[dict[str, Any]]:
     for scraper in scrapers:
         try:
             events = scraper.scrape()
+            if not events:
+                logger.warning(
+                    "Skipping %s: empty quotes (no fresh data)",
+                    scraper.bookmaker_name,
+                )
+                continue
             logger.info("Got %d events from %s", len(events), scraper.bookmaker_name)
             for event in events:
                 quotes.append(

@@ -22,8 +22,12 @@ MIN_MARGIN_THRESHOLD = float(os.getenv("MIN_MARGIN_THRESHOLD", "1.5"))
 DB_PATH = os.getenv("DB_PATH", os.getenv("DATABASE_PATH", "data/arb_scanner.db"))
 
 # Secrets from .env only — never hardcode
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+# TELEGRAM_TOKEN (Railway) or TELEGRAM_BOT_TOKEN (.env local)
+TELEGRAM_BOT_TOKEN = (
+    os.getenv("TELEGRAM_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or ""
+).strip()
+TELEGRAM_CHAT_ID = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+TELEGRAM_TOKEN = TELEGRAM_BOT_TOKEN
 
 
 @dataclass(frozen=True)
@@ -62,8 +66,16 @@ class Config:
 
 def get_config() -> Config:
     """Build config from defaults + environment variables."""
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    token = (
+        os.getenv("TELEGRAM_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or ""
+    ).strip()
+    chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+
+    if not token or not chat_id:
+        logging.getLogger(__name__).error(
+            "Missing TELEGRAM variables. Please set TELEGRAM_TOKEN "
+            "(or TELEGRAM_BOT_TOKEN) and TELEGRAM_CHAT_ID in Railway."
+        )
 
     db_raw = (
         os.getenv("DB_PATH", "").strip()
