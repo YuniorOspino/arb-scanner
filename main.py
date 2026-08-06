@@ -16,6 +16,7 @@ from storage.database import OpportunityStore
 logger = logging.getLogger(__name__)
 
 _shutdown = False
+_scanner: ArbScanner | None = None
 
 
 def _handle_signal(signum: int, _frame: object) -> None:
@@ -35,7 +36,21 @@ def send_startup_message(alerter: TelegramAlerter) -> None:
         logger.warning("Startup Telegram message not sent (check token/chat_id)")
 
 
+def run_scan_cycle() -> None:
+    """Ejecuta un ciclo de escaneo. Errores se manejan en el loop principal."""
+    if _scanner is None:
+        raise RuntimeError("Scanner not initialized")
+
+    opportunities = _scanner.run_once()
+    if opportunities:
+        logger.info("Ciclo con %d oportunidad(es)", len(opportunities))
+    else:
+        logger.info("No se encontraron oportunidades en este ciclo.")
+
+
 def main() -> int:
+    global _scanner
+
     setup_logging()
     cfg = get_config()
 
@@ -61,31 +76,27 @@ def main() -> int:
         chat_id=cfg.telegram_chat_id,
         enabled=cfg.telegram_enabled,
     )
-    scanner = ArbScanner(cfg, scrapers, store, alerter)
+    _scanner = ArbScanner(cfg, scrapers, store, alerter)
 
-    # Mensaje de prueba / confirmacion al arrancar
     send_startup_message(alerter)
 
     signal.signal(signal.SIGINT, _handle_signal)
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, _handle_signal)
 
-    # Bucle principal del motor
+    sleep_seconds = int(cfg.scan_interval_seconds) or 60
+
     while not _shutdown:
         try:
-            opportunities = scanner.run_once()
-            if opportunities:
-                logger.info("Ciclo con %d oportunidad(es)", len(opportunities))
-            else:
-                logger.info("No se encontraron oportunidades en este ciclo.")
-        except Exception:
-            logger.exception("Unhandled error in scan cycle")
+            run_scan_cycle()
+        except Exception as e:
+            logger.error("Error en ciclo: %s", e, exc_info=True)
 
         if _shutdown:
             break
 
-        logger.info("Sleeping %s seconds until next scan", cfg.scan_interval_seconds)
-        for _ in range(cfg.scan_interval_seconds):
+        logger.info("Sleeping %s seconds until next scan", sleep_seconds)
+        for _ in range(sleep_seconds):
             if _shutdown:
                 break
             time.sleep(1)
