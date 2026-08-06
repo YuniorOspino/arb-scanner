@@ -1,11 +1,20 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import requests
 
 from scrapers.event_names import normalize_event_name
+from scrapers.market_normalize import (
+    build_event,
+    classify_market,
+    extract_line,
+    fmt_line,
+    normalize_outcome_label,
+    quotes_from_events,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -16,10 +25,6 @@ TENANT_ID = "031a9bbf-eaa5-4ae3-9668-8a01db9464a3"
 TIMEOUT = 40.0
 PAGE_SIZE = 100
 MAX_PAGES = 8
-MATCH_WINNER_KEY = 1
-HOME_KEY = 20
-DRAW_KEY = 21
-AWAY_KEY = 22
 
 BROWSER_HEADERS = {
     "User-Agent": (
@@ -56,6 +61,7 @@ query currentOffer($tenantId: Uuid!, $first: Int!, $after: String) {
         eventName
         markets {
           marketKey
+          marketName
           selections {
             selectionKey
             selectionName
@@ -70,8 +76,8 @@ query currentOffer($tenantId: Uuid!, $first: Int!, $after: String) {
 
 
 def scrape_zamba() -> list[dict[str, Any]]:
-    events: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
     cursor: str | None = None
     try:
         for _ in range(MAX_PAGES):
@@ -92,13 +98,12 @@ def scrape_zamba() -> list[dict[str, Any]]:
             if payload.get("errors"):
                 logger.warning("Zamba GraphQL errors: %s", payload["errors"][:2])
                 break
-            page_events = _parse_payload(payload)
-            for event in page_events:
-                key = event["event"]
+            for row in _parse_payload(payload):
+                key = (row["event"], row["market"])
                 if key in seen:
                     continue
                 seen.add(key)
-                events.append(event)
+                rows.append(row)
 
             offer = ((payload.get("data") or {}).get("currentOffer")) or {}
             page_info = offer.get("pageInfo") or {}
@@ -109,24 +114,24 @@ def scrape_zamba() -> list[dict[str, Any]]:
                 break
     except (requests.RequestException, ValueError, TypeError, KeyError) as exc:
         logger.warning("Zamba live scrape failed: %s", exc)
-        return events
+        return rows
 
-    if events:
-        logger.info("Zamba scrape returned %d events", len(events))
+    if rows:
+        logger.info("Zamba scrape returned %d market-rows", len(rows))
     else:
         logger.warning("Zamba scrape produced no parseable events")
-    return events
+    return rows
 
 
 def _parse_payload(payload: Any) -> list[dict[str, Any]]:
-    events: list[dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
     data = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(data, dict):
-        return events
+        return rows
     offer = data.get("currentOffer") or {}
     nodes = offer.get("nodes")
     if not isinstance(nodes, list):
-        return events
+        return rows
 
     for node in nodes:
         if not isinstance(node, dict):
@@ -134,29 +139,111 @@ def _parse_payload(payload: Any) -> list[dict[str, Any]]:
         name = node.get("eventName")
         if not name:
             continue
-        odds = _extract_1x2(node.get("markets") or [])
-        if not odds:
-            continue
         event_name = normalize_event_name(str(name).replace(" - ", " vs "))
         if not event_name:
             continue
-        events.append({"event": event_name, "market": "1X2", "odds": odds})
-    return events
+        home, away = _split_teams(str(name))
+        for market in node.get("markets") or []:
+            parsed = _parse_market(event_name, market, home=home, away=away)
+            rows.extend(parsed)
+    return rows
 
 
-def _extract_1x2(markets: Any) -> dict[str, float] | None:
-    if not isinstance(markets, list):
-        return None
-    for market in markets:
-        if not isinstance(market, dict):
+def _split_teams(name: str) -> tuple[str | None, str | None]:
+    for sep in (" - ", " vs ", " v "):
+        if sep in name:
+            a, b = name.split(sep, 1)
+            return a.strip(), b.strip()
+    return None, None
+
+
+def _parse_market(
+    event_name: str,
+    market: Any,
+    *,
+    home: str | None,
+    away: str | None,
+) -> list[dict[str, Any]]:
+    if not isinstance(market, dict):
+        return []
+    mname = str(market.get("marketName") or "")
+    selections = market.get("selections")
+    if not mname or not isinstance(selections, list) or len(selections) < 2:
+        return []
+
+    line = extract_line(mname)
+    # For "+/- 0.5 Total Goals" style, also peek selection names
+    if line is None:
+        for sel in selections:
+            if isinstance(sel, dict):
+                line = extract_line(str(sel.get("selectionName") or ""))
+                if line is not None:
+                    line = abs(line)
+                    break
+
+    market_id = classify_market(
+        type_name=mname,
+        type_id=market.get("marketKey"),
+        label=mname,
+        line=abs(line) if line is not None else None,
+        english_type=mname,
+        home=home,
+        away=away,
+    )
+    if not market_id:
+        return []
+
+    # Refine team totals when market name embeds team
+    if home and home.lower() in mname.lower() and ("+/-" in mname or "goals" in mname.lower()):
+        if line is not None:
+            market_id = f"TT_HOME_{fmt_line(abs(line))}"
+    elif away and away.lower() in mname.lower() and ("+/-" in mname or "goals" in mname.lower()):
+        if line is not None:
+            market_id = f"TT_AWAY_{fmt_line(abs(line))}"
+
+    # Corners from name
+    if "corner" in mname.lower() and line is not None:
+        market_id = f"CORNERS_OU_{fmt_line(abs(line))}"
+
+    # European handicap Handicap 0:1
+    m = re.search(r"handicap\s+(\d+)\s*:\s*(\d+)", mname.lower())
+    if m:
+        eh = int(m.group(1)) - int(m.group(2))
+        market_id = f"EH_{fmt_line(eh)}"
+
+    odds = _selections_to_odds(selections, market_id=market_id, home=home, away=away)
+    row = build_event(event_name, market_id, odds or {})
+    return [row] if row else []
+
+
+def _selections_to_odds(
+    selections: list[Any],
+    *,
+    market_id: str,
+    home: str | None,
+    away: str | None,
+) -> dict[str, float] | None:
+    mapped: dict[str, float] = {}
+    ordered: list[tuple[str, float]] = []
+    for sel in selections:
+        if not isinstance(sel, dict):
             continue
-        if market.get("marketKey") != MATCH_WINNER_KEY:
+        try:
+            price = float(sel.get("price"))
+        except (TypeError, ValueError):
             continue
-        selections = market.get("selections")
-        if not isinstance(selections, list) or len(selections) < 3:
+        if price <= 1.0:
             continue
-        mapped: dict[str, float] = {}
-        ordered: list[float] = []
+        label = str(sel.get("selectionName") or "").strip()
+        key = _map_selection(label, market_id=market_id, home=home, away=away, sk=sel.get("selectionKey"))
+        if key:
+            mapped[key] = price
+            ordered.append((key, price))
+    # Fallback positional for 1X2 if names are team names
+    if market_id == "1X2" and not ({"home", "draw", "away"} <= mapped.keys()):
+        prices = [p for _, p in ordered] if ordered else []
+        # rebuild from selection order home/draw/away convention
+        vals = []
         for sel in selections:
             if not isinstance(sel, dict):
                 continue
@@ -164,31 +251,73 @@ def _extract_1x2(markets: Any) -> dict[str, float] | None:
                 price = float(sel.get("price"))
             except (TypeError, ValueError):
                 continue
-            if price <= 1.0:
-                continue
-            ordered.append(price)
-            key = _selection_outcome(sel)
-            if key is not None:
-                mapped[key] = price
-        if {"home", "draw", "away"} <= mapped.keys():
-            return mapped
-        if len(ordered) >= 3:
-            return {"home": ordered[0], "draw": ordered[1], "away": ordered[2]}
-    return None
+            if price > 1.0:
+                vals.append(price)
+        if len(vals) >= 3:
+            return {"home": vals[0], "draw": vals[1], "away": vals[2]}
+    return mapped or None
 
 
-def _selection_outcome(sel: dict[str, Any]) -> str | None:
-    sk = sel.get("selectionKey")
-    if sk == HOME_KEY:
+def _map_selection(
+    label: str,
+    *,
+    market_id: str,
+    home: str | None,
+    away: str | None,
+    sk: Any,
+) -> str | None:
+    # Known Niobe keys for match winner
+    if sk == 20:
         return "home"
-    if sk == DRAW_KEY:
+    if sk == 21:
         return "draw"
-    if sk == AWAY_KEY:
+    if sk == 22:
         return "away"
-    name = str(sel.get("selectionName") or "").strip().lower()
-    if name in {"draw", "empate", "x"}:
-        return "draw"
-    return None
+    if sk == 27:
+        return "1x"
+    if sk == 28:
+        return "12"
+    if sk == 29:
+        return "x2"
+
+    norm = normalize_outcome_label(label)
+    low = label.lower().strip()
+
+    if market_id in {"1X2", "HT_1X2", "HT2_1X2", "DNB"} or market_id.startswith("EH_"):
+        if home and low == home.lower():
+            return "home"
+        if away and low == away.lower():
+            return "away"
+        if norm in {"home", "draw", "away"}:
+            return norm
+        if low in {"x", "draw", "empate"}:
+            return "draw"
+        return None
+
+    if market_id in {"DC", "DC_HT"}:
+        return norm if norm in {"1x", "12", "x2"} else None
+
+    if market_id.startswith(("OU", "AOU", "CORNERS", "CARDS", "TT_")):
+        if low.startswith("+") or norm == "over":
+            return "over"
+        if low.startswith("-") or norm == "under":
+            return "under"
+        return None
+
+    if market_id.startswith("AH"):
+        if home and low == home.lower():
+            return "home"
+        if away and low == away.lower():
+            return "away"
+        return None
+
+    if market_id.startswith("BTTS"):
+        return norm if norm in {"yes", "no"} else None
+
+    if market_id in {"CS", "CS_HT", "HTFT"}:
+        return norm
+
+    return norm or None
 
 
 class ZambaScraper:
@@ -198,18 +327,4 @@ class ZambaScraper:
         return scrape_zamba()
 
     def fetch_odds(self):
-        from core.models import OddsQuote
-
-        quotes = []
-        for event in self.scrape():
-            for outcome, odd in event["odds"].items():
-                quotes.append(
-                    OddsQuote(
-                        bookmaker=self.bookmaker_name,
-                        outcome=outcome,
-                        odds=float(odd),
-                        market_id=event.get("market", "1X2"),
-                        event_name=event["event"],
-                    )
-                )
-        return quotes
+        return quotes_from_events(self.bookmaker_name, self.scrape())

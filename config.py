@@ -20,6 +20,33 @@ BASE_DIR = Path(__file__).resolve().parent
 TOTAL_INVESTMENT = float(os.getenv("TOTAL_INVESTMENT", "100.0"))
 MIN_MARGIN_THRESHOLD = float(os.getenv("MIN_MARGIN_THRESHOLD", "1.5"))
 DB_PATH = os.getenv("DB_PATH", os.getenv("DATABASE_PATH", "data/arb_scanner.db"))
+# Single-active execution queue
+EXECUTION_TTL_SECONDS = int(os.getenv("EXECUTION_TTL_SECONDS", "120"))
+EXECUTION_QUEUE_MAX = int(os.getenv("EXECUTION_QUEUE_MAX", "25"))
+# Backward-compatible alias (queue size)
+EXECUTION_TOP_N = int(os.getenv("EXECUTION_TOP_N", str(EXECUTION_QUEUE_MAX)))
+
+_DEFAULT_BOOKS = (
+    "betplay",
+    "wplay",
+    "betano",
+    "rushbet",
+    "zamba",
+    "codere",
+)
+
+
+def _load_book_capitals() -> dict[str, float]:
+    """Per-book bankroll from BOOK_CAPITAL_<BOOK> or fallback TOTAL_INVESTMENT."""
+    capitals: dict[str, float] = {}
+    fallback = float(os.getenv("TOTAL_INVESTMENT", str(TOTAL_INVESTMENT)))
+    for book in _DEFAULT_BOOKS:
+        raw = os.getenv(f"BOOK_CAPITAL_{book.upper()}", "").strip()
+        if raw:
+            capitals[book] = float(raw)
+        else:
+            capitals[book] = fallback
+    return capitals
 
 # Secrets from .env only — never hardcode
 # TELEGRAM_TOKEN (Railway) or TELEGRAM_BOT_TOKEN (.env local)
@@ -63,6 +90,15 @@ class Config:
     # Storage
     database_path: Path = BASE_DIR / "data" / "arb_scanner.db"
 
+    # Execution Manager (single active + ranked queue)
+    book_capitals: tuple[tuple[str, float], ...] = ()
+    execution_top_n: int = EXECUTION_QUEUE_MAX  # max queued candidates
+    execution_ttl_seconds: int = EXECUTION_TTL_SECONDS
+    execution_queue_max: int = EXECUTION_QUEUE_MAX
+
+    def book_capital_map(self) -> dict[str, float]:
+        return {k: float(v) for k, v in self.book_capitals}
+
 
 def get_config() -> Config:
     """Build config from defaults + environment variables."""
@@ -88,6 +124,14 @@ def get_config() -> Config:
 
     total_investment = float(os.getenv("TOTAL_INVESTMENT", str(TOTAL_INVESTMENT)))
     min_margin = float(os.getenv("MIN_MARGIN_THRESHOLD", str(MIN_MARGIN_THRESHOLD)))
+    queue_max = int(
+        os.getenv(
+            "EXECUTION_QUEUE_MAX",
+            os.getenv("EXECUTION_TOP_N", str(EXECUTION_QUEUE_MAX)),
+        )
+    )
+    ttl = int(os.getenv("EXECUTION_TTL_SECONDS", str(EXECUTION_TTL_SECONDS)))
+    capitals = _load_book_capitals()
 
     return Config(
         min_profit_percent=min_margin,
@@ -97,6 +141,10 @@ def get_config() -> Config:
         telegram_chat_id=chat_id,
         telegram_enabled=bool(token and chat_id),
         database_path=db_path,
+        book_capitals=tuple(sorted(capitals.items())),
+        execution_top_n=max(1, queue_max),
+        execution_ttl_seconds=max(15, ttl),
+        execution_queue_max=max(1, queue_max),
     )
 
 

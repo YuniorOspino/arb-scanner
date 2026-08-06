@@ -92,30 +92,44 @@ def parse_codere_data(payload: Any) -> list[dict[str, Any]]:
         markets = item.get("markets") or item.get("Markets") or []
         if not name or not isinstance(markets, list):
             continue
+        from scrapers.event_names import normalize_event_name
+        from scrapers.market_normalize import build_event, classify_market, normalize_outcome_label
+
         for market in markets:
             if not isinstance(market, dict):
                 continue
-            if str(market.get("type", "")).upper() not in {"1X2", "MATCH_RESULT", "MR"}:
+            mtype = str(market.get("type") or market.get("Type") or "")
+            mname = str(market.get("name") or market.get("Name") or mtype)
+            odds_raw = market.get("odds") or market.get("Odds") or market.get("selections")
+            mapped: dict[str, float] = {}
+            if isinstance(odds_raw, dict):
+                for k, v in odds_raw.items():
+                    try:
+                        price = float(v)
+                    except (TypeError, ValueError):
+                        continue
+                    if price <= 1.0:
+                        continue
+                    mapped[normalize_outcome_label(str(k))] = price
+            elif isinstance(odds_raw, list):
+                for sel in odds_raw:
+                    if not isinstance(sel, dict):
+                        continue
+                    try:
+                        price = float(sel.get("price") or sel.get("odds") or sel.get("Odds"))
+                    except (TypeError, ValueError):
+                        continue
+                    if price <= 1.0:
+                        continue
+                    label = sel.get("name") or sel.get("Name") or sel.get("outcome") or ""
+                    mapped[normalize_outcome_label(str(label))] = price
+            market_id = classify_market(type_name=mname, type_id=mtype, label=mname, english_type=mtype)
+            if not market_id:
                 continue
-            odds = market.get("odds") or {}
-            if not isinstance(odds, dict):
-                continue
-            home = odds.get("home") or odds.get("1")
-            draw = odds.get("draw") or odds.get("X")
-            away = odds.get("away") or odds.get("2")
-            try:
-                home_f, draw_f, away_f = float(home), float(draw), float(away)
-            except (TypeError, ValueError):
-                continue
-            if min(home_f, draw_f, away_f) <= 1.0:
-                continue
-            events.append(
-                {
-                    "event": str(name),
-                    "market": "1X2",
-                    "odds": {"home": home_f, "draw": draw_f, "away": away_f},
-                }
-            )
+            event_name = normalize_event_name(str(name))
+            row = build_event(event_name, market_id, mapped)
+            if row:
+                events.append(row)
     return events
 
 
@@ -126,18 +140,6 @@ class CodereScraper:
         return scrape_codere()
 
     def fetch_odds(self):
-        from core.models import OddsQuote
+        from scrapers.market_normalize import quotes_from_events
 
-        quotes = []
-        for event in self.scrape():
-            for outcome, odd in event["odds"].items():
-                quotes.append(
-                    OddsQuote(
-                        bookmaker=self.bookmaker_name,
-                        outcome=outcome,
-                        odds=float(odd),
-                        market_id=event.get("market", "1X2"),
-                        event_name=event["event"],
-                    )
-                )
-        return quotes
+        return quotes_from_events(self.bookmaker_name, self.scrape())

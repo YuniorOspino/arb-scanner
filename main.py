@@ -1,4 +1,4 @@
-"""arb-scanner entrypoint: continuous scan loop with Telegram startup ping."""
+"""arb-scanner entrypoint: Scanner → Execution Manager (single active) → Telegram."""
 
 from __future__ import annotations
 
@@ -7,12 +7,13 @@ import os
 import signal
 import sys
 import time
+from typing import Any
 
-from alerts.formatter import format_arbitrage_alert
 from alerts.telegram import (
     TelegramAlerter,
-    send_telegram_message,
-    verify_opportunity_odds,
+    poll_execution_callbacks,
+    prepare_opportunity_for_alert,
+    send_execution_ready_telegram,
 )
 from config import get_config, setup_logging
 from core.scanner import ArbScanner
@@ -23,6 +24,9 @@ logger = logging.getLogger(__name__)
 
 _shutdown = False
 _scanner: ArbScanner | None = None
+_store: OpportunityStore | None = None
+_min_profit_percent: float = 0.0
+_tg_update_offset: int = 0
 
 TELEGRAM_TOKEN = (
     os.getenv("TELEGRAM_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or ""
@@ -42,7 +46,7 @@ def send_startup_message(alerter: TelegramAlerter | None) -> None:
         return
 
     ok = alerter.send_message(
-        "El motor arb-scanner inicio y esta buscando oportunidades."
+        "arb-scanner listo. Flujo: Scanner → cola EM → 1 oportunidad activa en Telegram."
     )
     if ok:
         logger.info("Startup Telegram message sent")
@@ -50,42 +54,84 @@ def send_startup_message(alerter: TelegramAlerter | None) -> None:
         logger.warning("Startup Telegram message not sent (check token/chat_id)")
 
 
+def _send_active(execution: dict[str, Any]) -> None:
+    sent = send_execution_ready_telegram(
+        execution,
+        TELEGRAM_TOKEN,
+        TELEGRAM_CHAT_ID,
+        store=_store,
+    )
+    logger.info(
+        "EM Telegram ACTIVE sent=%s id=%s event=%s score=%s",
+        sent,
+        execution["id"],
+        execution["event_name"],
+        execution.get("score"),
+    )
+
+
 def run_scan_cycle() -> None:
-    if _scanner is None:
-        raise RuntimeError("Scanner not initialized")
+    """Scanner → verify → EM queue/rank/expire → Telegram only if active changed."""
+    if _scanner is None or _store is None:
+        raise RuntimeError("Scanner/store not initialized")
 
     opportunities = _scanner.run_once()
-    if not opportunities:
-        logger.info("No se encontraron oportunidades en este ciclo.")
+    verified = []
+    if opportunities:
+        logger.info("Ciclo con %d oportunidad(es)", len(opportunities))
+        quote_cache: dict = {}
+        for opp in opportunities:
+            ready = prepare_opportunity_for_alert(
+                opp,
+                _scanner.scrapers,
+                total_stake=opp.total_stake,
+                min_profit_percent=_min_profit_percent,
+                quote_cache=quote_cache,
+            )
+            if ready is None:
+                logger.warning(
+                    "Oportunidad cancelada pre-EM (cuota/ROI): %s",
+                    opp.event_name,
+                )
+                continue
+            verified.append(ready)
+    else:
+        logger.info("Sin oportunidades nuevas; EM reordena/expira cola existente.")
+
+    to_send = _store.process_execution_cycle(verified)
+    if to_send is None:
+        active = _store.get_active_execution()
+        if active is None:
+            logger.info("EM: sin oportunidad activa")
+        else:
+            logger.info(
+                "EM: activa sin cambios id=%s event=%s",
+                active["id"],
+                active["event_name"],
+            )
         return
 
-    logger.info("Ciclo con %d oportunidad(es)", len(opportunities))
-    quote_cache: dict = {}
-    for opp in opportunities:
-        still_valid = verify_opportunity_odds(
-            opp,
-            _scanner.scrapers,
-            quote_cache=quote_cache,
-        )
-        if not still_valid:
-            logger.warning(
-                "Oportunidad descartada (cuotas ausentes o cambiaron): %s",
-                opp.event_name,
-            )
-            continue
+    _send_active(to_send)
 
-        message = format_arbitrage_alert(opp)
-        sent = send_telegram_message(
-            message,
-            bot_token=TELEGRAM_TOKEN,
-            chat_id=TELEGRAM_CHAT_ID,
-        )
-        logger.info(
-            "Alert sent=%s event=%s profit=%s",
-            sent,
-            opp.event_name,
-            opp.profit_percent,
-        )
+
+def _poll_callbacks_once() -> None:
+    global _tg_update_offset
+    if _store is None or not TELEGRAM_TOKEN:
+        return
+
+    # Expire during idle; if active died, promote + send next
+    if _store.expire_stale():
+        nxt = _store.promote_next_active()
+        if nxt is not None:
+            _send_active(nxt)
+
+    _tg_update_offset, nxt = poll_execution_callbacks(
+        _store,
+        TELEGRAM_TOKEN,
+        offset=_tg_update_offset or None,
+    )
+    if nxt is not None:
+        _send_active(nxt)
 
 
 def _build_alerter() -> TelegramAlerter | None:
@@ -103,21 +149,26 @@ def _build_alerter() -> TelegramAlerter | None:
         bot_token=token,
         chat_id=chat_id,
         enabled=True,
+        total_stake=None,
+        min_profit_percent=_min_profit_percent,
     )
 
 
 def main() -> int:
-    global _scanner
+    global _scanner, _store, _min_profit_percent
 
     setup_logging()
     cfg = get_config()
+    _min_profit_percent = float(cfg.min_profit_percent)
 
     logger.info("arb-scanner starting")
     logger.info(
-        "Config: interval=%ss min_profit=%.2f%% stake=%.2f books=%s",
+        "Config: interval=%ss min_profit=%.2f%% stake=%.2f queue_max=%d ttl=%ds books=%s",
         cfg.scan_interval_seconds,
         cfg.min_profit_percent,
         cfg.max_stake_total,
+        cfg.execution_queue_max,
+        cfg.execution_ttl_seconds,
         ", ".join(cfg.active_bookmakers),
     )
     logger.debug("Database path: %s", cfg.database_path)
@@ -127,12 +178,19 @@ def main() -> int:
         logger.error("No scrapers enabled — check config.active_bookmakers")
         return 1
 
-    store = OpportunityStore(cfg.database_path)
+    _store = OpportunityStore(
+        cfg.database_path,
+        book_capitals=cfg.book_capital_map(),
+        top_n=cfg.execution_queue_max,
+        ttl_seconds=cfg.execution_ttl_seconds,
+        queue_max=cfg.execution_queue_max,
+    )
     alerter = _build_alerter()
     if alerter is not None:
         alerter.scrapers = scrapers
-    # alerter=None avoids duplicate Telegram sends from scanner; main sends alerts
-    _scanner = ArbScanner(cfg, scrapers, store, alerter=None)
+        alerter.min_profit_percent = _min_profit_percent
+        alerter.total_stake = cfg.max_stake_total
+    _scanner = ArbScanner(cfg, scrapers, _store, alerter=None)
 
     send_startup_message(alerter)
 
@@ -151,10 +209,16 @@ def main() -> int:
         if _shutdown:
             break
 
-        logger.info("Sleeping %s seconds until next scan", sleep_seconds)
+        logger.info(
+            "Sleeping %s seconds (poll EM callbacks / expiry)", sleep_seconds
+        )
         for _ in range(sleep_seconds):
             if _shutdown:
                 break
+            try:
+                _poll_callbacks_once()
+            except Exception:
+                logger.exception("Error polling Telegram callbacks")
             time.sleep(1)
 
     logger.info("arb-scanner stopped")

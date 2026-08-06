@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from scrapers.kambi import fetch_kambi_events
+from scrapers.market_normalize import quotes_from_events
 
 
 def scrape_betplay() -> list[dict[str, Any]]:
@@ -16,18 +17,4 @@ class BetPlayScraper:
         return scrape_betplay()
 
     def fetch_odds(self):
-        from core.models import OddsQuote
-
-        quotes = []
-        for event in self.scrape():
-            for outcome, odd in event["odds"].items():
-                quotes.append(
-                    OddsQuote(
-                        bookmaker=self.bookmaker_name,
-                        outcome=outcome,
-                        odds=float(odd),
-                        market_id=event.get("market", "1X2"),
-                        event_name=event["event"],
-                    )
-                )
-        return quotes
+        return quotes_from_events(self.bookmaker_name, self.scrape())

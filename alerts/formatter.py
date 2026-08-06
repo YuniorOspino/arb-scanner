@@ -6,10 +6,13 @@ import logging
 import re
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote_plus
 
 from core.models import ArbitrageOpportunity
 
 logger = logging.getLogger(__name__)
+
+_SEP = "━━━━━━━━━━━━━━━━━━━━━━"
 
 _OUTCOME_LABELS = {
     "home": "Local (1)",
@@ -21,15 +24,15 @@ _OUTCOME_LABELS = {
     "away": "Visitante (2)",
     "2": "Visitante (2)",
     "visitante": "Visitante (2)",
-}
-
-_BOOK_LINKS = {
-    "betano": "https://www.betano.co/sport/futbol/",
-    "betplay": "https://betplay.com.co/apuestas",
-    "wplay": "https://apuestas.wplay.co/es/s/FOOT/F%C3%BAtbol",
-    "rushbet": "https://www.rushbet.co/?page=sportsbook",
-    "zamba": "https://www.zamba.co/deportes",
-    "codere": "https://m.codere.com.co/deportesCol/",
+    "over": "Over (Más de)",
+    "under": "Under (Menos de)",
+    "yes": "Sí",
+    "si": "Sí",
+    "sí": "Sí",
+    "no": "No",
+    "1x": "1X (Local o Empate)",
+    "12": "12 (Local o Visitante)",
+    "x2": "X2 (Empate o Visitante)",
 }
 
 _BOOK_DISPLAY = {
@@ -41,34 +44,28 @@ _BOOK_DISPLAY = {
     "wplay": "Wplay",
 }
 
+_BOOK_HOME = {
+    "betano": "https://www.betano.co/sport/futbol/",
+    "betplay": "https://betplay.com.co/apuestas",
+    "wplay": "https://apuestas.wplay.co/es/s/FOOT/F%C3%BAtbol",
+    "rushbet": "https://www.rushbet.co/?page=sportsbook",
+    "zamba": "https://www.zamba.co/deportes",
+    "codere": "https://m.codere.com.co/deportesCol/",
+}
 
-def _exact(value: Any) -> str:
-    """Render scanner numeric values without extra rounding."""
-    if isinstance(value, bool):
-        return str(value)
-    if isinstance(value, int):
-        return str(value)
-    if isinstance(value, float):
-        return format(value, ".15g")
-    return str(value)
+
+def _money(value: float) -> str:
+    return f"{float(value):.2f}"
+
+
+def _odds(value: float) -> str:
+    text = f"{float(value):.3f}".rstrip("0").rstrip(".")
+    return text if text else "0"
 
 
 def _display_book(name: str) -> str:
     key = str(name).strip().lower()
     return _BOOK_DISPLAY.get(key, str(name).strip())
-
-
-def _selection_label(outcome: str, event_name: str) -> str:
-    key = str(outcome).strip().lower()
-    base = _OUTCOME_LABELS.get(key)
-    if base is None:
-        return str(outcome)
-    local, away = _split_teams(event_name)
-    if key in {"home", "1", "local"}:
-        return f"{base} — {local}"
-    if key in {"away", "2", "visitante"}:
-        return f"{base} — {away}"
-    return base
 
 
 def _split_teams(evento: str) -> tuple[str, str]:
@@ -78,76 +75,189 @@ def _split_teams(evento: str) -> tuple[str, str]:
     return "equipo local", "equipo visitante"
 
 
-def _sport_for_market(market_type: str) -> str:
-    market = str(market_type or "").upper()
-    if market in {"1X2", "MRES", "MR", "MATCH_RESULT"}:
-        return "Futbol"
-    return "Desconocido"
+def _selection_label(outcome: str, event_name: str) -> str:
+    key = str(outcome).strip().lower()
+    local, away = _split_teams(event_name)
+    if key in {"home", "1", "local"}:
+        return f"Local (1) — {local}"
+    if key in {"away", "2", "visitante"}:
+        return f"Visitante (2) — {away}"
+    if key in {"draw", "x", "empate"}:
+        return "Empate (X)"
+    base = _OUTCOME_LABELS.get(key)
+    if base is not None:
+        return base
+    # Correct score / HTFT keep compact
+    return str(outcome)
 
 
-def _capture_time(opportunity: ArbitrageOpportunity) -> str:
-    ts = opportunity.detected_at
+def _market_label(market_type: str) -> str:
+    m = str(market_type or "").strip()
+    up = m.upper()
+    if up in {"1X2", "MRES", "MR", "MATCH_RESULT"}:
+        return "1X2"
+    if up == "BTTS":
+        return "BTTS"
+    if up.startswith("BTTS"):
+        return f"BTTS ({m})"
+    if up == "DC":
+        return "Double Chance"
+    if up.startswith("DC"):
+        return f"Double Chance ({m})"
+    if up == "DNB":
+        return "Draw No Bet"
+    if up == "HTFT":
+        return "Half Time / Full Time"
+    if up == "HT_1X2":
+        return "Half Time 1X2"
+    if up == "HT2_1X2":
+        return "Second Half 1X2"
+    if up == "CS" or up.startswith("CS"):
+        return "Correct Score"
+    if up.startswith("OU_HT_"):
+        return f"Over-Under 1H {up[6:]}"
+    if up.startswith("OU_HT2_"):
+        return f"Over-Under 2H {up[7:]}"
+    if up.startswith("OU_"):
+        return f"Over-Under {up[3:]}"
+    if up.startswith("AOU_"):
+        return f"Asian Over-Under {up[4:]}"
+    if up.startswith("AH_"):
+        return f"Handicap Asiático {up[3:]}"
+    if up.startswith("EH_"):
+        return f"Handicap Europeo {up[3:]}"
+    if up.startswith("TT_HOME_"):
+        return f"Team Total Local {up[8:]}"
+    if up.startswith("TT_AWAY_"):
+        return f"Team Total Visitante {up[8:]}"
+    if up.startswith("CORNERS_OU_"):
+        return f"Corners Over-Under {up[11:]}"
+    if up.startswith("CARDS_OU_"):
+        return f"Cards Over-Under {up[9:]}"
+    if "HANDICAP" in up or up.startswith("AH") or up.startswith("EH"):
+        return f"Handicap ({m})"
+    if "OU" in up or "OVER" in up:
+        return f"Over-Under ({m})"
+    return m or "Mercado"
+
+
+def _event_link(bookmaker: str, event_name: str) -> str:
+    """Best-effort deep/search link to open the match quickly (alert-layer only)."""
+    key = str(bookmaker).strip().lower()
+    home, away = _split_teams(event_name)
+    query = quote_plus(f"{home} {away}".strip())
+
+    if key == "betano":
+        return f"https://www.betano.co/search?q={query}"
+    if key == "betplay":
+        return (
+            "https://betplay.com.co/apuestas?"
+            f"searchTerm={query}#/search?query={query}"
+        )
+    if key == "rushbet":
+        return f"https://www.rushbet.co/?page=sportsbook&search={query}"
+    if key == "wplay":
+        # Event slug search on football section
+        return (
+            "https://apuestas.wplay.co/es/s/FOOT/F%C3%BAtbol?"
+            f"search={query}"
+        )
+    if key == "zamba":
+        return f"https://www.zamba.co/deportes?search={query}"
+    if key == "codere":
+        return f"https://m.codere.com.co/deportesCol/#/search/{query}"
+    return _BOOK_HOME.get(key, "No disponible")
+
+
+def _format_detected_at(ts: datetime) -> str:
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
     return ts.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
-def _market_link(bookmaker: str) -> str:
-    return _BOOK_LINKS.get(str(bookmaker).strip().lower(), "No disponible")
+def _age_seconds(ts: datetime, *, now: datetime | None = None) -> int:
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return max(0, int((current - ts.astimezone(timezone.utc)).total_seconds()))
 
 
 def format_arbitrage_alert(opportunity: dict | ArbitrageOpportunity) -> str:
-    """Build Telegram text using exact scanner opportunity fields only."""
+    """Build a professional Telegram alert for manual execution (<20s)."""
+    if not isinstance(opportunity, ArbitrageOpportunity):
+        opportunity = opportunity_from_payload(opportunity)
+    return format_execution_ready_alert(
+        opportunity,
+        status="LISTO",
+        execution_id=None,
+        score=None,
+    )
+
+
+def format_execution_ready_alert(
+    opportunity: dict | ArbitrageOpportunity,
+    *,
+    status: str = "LISTO",
+    execution_id: int | None = None,
+    score: float | None = None,
+) -> str:
+    """Execution Manager payload: everything ready for click → confirm."""
     if not isinstance(opportunity, ArbitrageOpportunity):
         opportunity = opportunity_from_payload(opportunity)
 
-    expected_profit = opportunity.expected_profit
-    expected_return = opportunity.total_stake + expected_profit
+    detected = _format_detected_at(opportunity.detected_at)
+    age = _age_seconds(opportunity.detected_at)
+    market = _market_label(opportunity.market_type)
+    estado = str(status or "LISTO").upper()
 
     lines = [
-        "ARBITRAJE DETECTADO",
-        "",
-        f"Partido: {opportunity.event_name}",
-        f"Deporte: {_sport_for_market(opportunity.market_type)}",
-        f"Mercado: {opportunity.market_type}",
-        f"Hora de captura: {_capture_time(opportunity)}",
-        f"Ganancia estimada: {_exact(opportunity.profit_percent)}%",
-        "",
-        "APUESTAS (datos exactos del scanner):",
+        _SEP,
+        "🚨 ARBITRAJE DETECTADO",
+        _SEP,
+        "🏆 Deporte: Fútbol",
+        "🏆 Liga: No disponible",
+        f"⚽ Partido: {opportunity.event_name}",
+        "🕒 Hora del evento: No disponible",
+        f"📊 Mercado: {market}",
+        f"📈 ROI: {_odds(opportunity.profit_percent)}%",
+        f"💰 Beneficio esperado: {_money(opportunity.expected_profit)}",
+        f"📌 Estado: {estado}",
     ]
+    if execution_id is not None:
+        lines.append(f"🆔 Ejecución: {execution_id}")
+    if score is not None:
+        lines.append(f"⭐ Score: {_odds(score)}")
+    lines.append(_SEP)
 
     for idx, (bookmaker, outcome, odds, stake) in enumerate(opportunity.legs, start=1):
         lines.extend(
             [
-                f"{idx})",
-                f"Casa de apuestas: {_display_book(bookmaker)}",
+                f"CASA {idx}",
+                f"Nombre: {_display_book(bookmaker)}",
+                f"Mercado: {market}",
                 f"Selección: {_selection_label(outcome, opportunity.event_name)}",
-                f"Cuota exacta: {_exact(odds)}",
-                f"Stake sugerido: {_exact(stake)}",
-                f"Link: {_market_link(bookmaker)}",
-                "",
+                f"Stake: {_money(stake)}",
+                f"Cuota: {_odds(odds)}",
+                f"Link directo al partido: {_event_link(bookmaker, opportunity.event_name)}",
+                f"Estado: {estado}",
+                _SEP,
             ]
-        )
-
-    lines.append("Distribución sugerida del dinero:")
-    for bookmaker, outcome, odds, stake in opportunity.legs:
-        lines.append(
-            f"- {_display_book(bookmaker)} / {_selection_label(outcome, opportunity.event_name)}: "
-            f"{_exact(stake)}"
         )
 
     lines.extend(
         [
-            "",
-            f"Stake total: {_exact(opportunity.total_stake)}",
-            f"Retorno esperado: {_exact(expected_return)}",
-            f"Ganancia esperada: {_exact(expected_profit)}",
+            f"⏱ Detectado: {detected}",
+            f"⌛ Edad de la oportunidad: {age} segundos",
+            "👉 Clic en el link → confirma en la casa → siguiente casa",
+            _SEP,
         ]
     )
 
     msg = "\n".join(lines)
     logger.debug(
-        "Formatted alert for event=%s (%d chars)",
+        "Formatted execution alert for event=%s (%d chars)",
         opportunity.event_name,
         len(msg),
     )
@@ -197,7 +307,7 @@ def opportunity_from_payload(opportunity: dict[str, Any]) -> ArbitrageOpportunit
 
     detected = opportunity.get("detected_at")
     if not isinstance(detected, datetime):
-        detected = datetime.now()
+        detected = datetime.now(timezone.utc)
 
     return ArbitrageOpportunity(
         event_name=event_name,
@@ -227,7 +337,7 @@ def format_value_bet_alert(value_bet: dict) -> str:
     if stake is None and isinstance(value_bet.get("kelly"), dict):
         stake = value_bet["kelly"].get("stake")
     if stake is not None:
-        lines.append(f"Stake recomendado: {_exact(stake)}")
+        lines.append(f"Stake recomendado: {_money(float(stake))}")
     else:
         lines.append("Stake recomendado: N/A")
 
