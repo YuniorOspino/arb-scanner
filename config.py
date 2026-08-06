@@ -38,9 +38,12 @@ class Config:
 
     # Active bookmakers (keys under scrapers/)
     active_bookmakers: tuple[str, ...] = (
-        "bet365",
-        "draftkings",
-        "fanduel",
+        "betplay",
+        "wplay",
+        "betano",
+        "rushbet",
+        "zamba",
+        "codere",
     )
 
     # Logging
