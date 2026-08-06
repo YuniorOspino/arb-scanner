@@ -1,88 +1,117 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import requests
+from bs4 import BeautifulSoup
+
+from scrapers.event_names import normalize_event_name
 
 logger = logging.getLogger(__name__)
 
-WPLAY_URL = "https://www.wplay.co/api/sport/football/fixtures"
-TIMEOUT = 15.0
+WPLAY_URL = "https://apuestas.wplay.co/es/s/FOOT/Fútbol"
+TIMEOUT = 25.0
+BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "es-CO,es;q=0.9,en;q=0.8",
+    "Referer": "https://www.wplay.co/",
+}
 
 
 def scrape_wplay() -> list[dict[str, Any]]:
     try:
-        response = requests.get(
-            WPLAY_URL,
-            timeout=TIMEOUT,
-            headers={"User-Agent": "arb-scanner/1.0"},
-        )
+        response = requests.get(WPLAY_URL, timeout=TIMEOUT, headers=BROWSER_HEADERS)
         response.raise_for_status()
-        payload = response.json()
-        events = _parse_wplay_payload(payload)
+        events = _parse_wplay_html(response.text)
         if events:
             logger.info("Wplay scrape returned %d events", len(events))
             return events
-    except (requests.RequestException, ValueError, TypeError, KeyError):
-        logger.exception("Wplay live scrape failed; using mock data")
+    except (requests.RequestException, ValueError, TypeError, KeyError) as exc:
+        logger.warning("Wplay live scrape failed: %s", exc)
+        return []
+    logger.warning("Wplay scrape produced no parseable events")
+    return []
 
-    return _mock_wplay_events()
 
-
-def _parse_wplay_payload(payload: Any) -> list[dict[str, Any]]:
+def _parse_wplay_html(html: str) -> list[dict[str, Any]]:
+    soup = BeautifulSoup(html, "html.parser")
     events: list[dict[str, Any]] = []
-    raw_events = payload.get("events") if isinstance(payload, dict) else None
-    if not isinstance(raw_events, list):
-        return events
+    seen: set[str] = set()
 
-    for item in raw_events:
-        if not isinstance(item, dict):
+    for mkt in soup.select(".mkt, [class*='mkt']"):
+        cells = mkt.select("td.seln, div.seln")
+        if len(cells) < 3:
             continue
-        name = item.get("name") or item.get("event")
-        markets = item.get("markets") or []
-        if not name or not isinstance(markets, list):
-            continue
-        for market in markets:
-            if not isinstance(market, dict):
+
+        home_name = ""
+        away_name = ""
+        home = draw = away = None
+        for cell in cells:
+            classes = " ".join(cell.get("class") or [])
+            price_el = cell.select_one("span.price.dec")
+            if price_el is None:
                 continue
-            if str(market.get("type", "")).upper() not in {"1X2", "MATCH_RESULT", "MR"}:
-                continue
-            odds = market.get("odds") or {}
-            if not isinstance(odds, dict):
-                continue
-            home = odds.get("home") or odds.get("1")
-            draw = odds.get("draw") or odds.get("X")
-            away = odds.get("away") or odds.get("2")
             try:
-                home_f, draw_f, away_f = float(home), float(draw), float(away)
-            except (TypeError, ValueError):
+                price = float(price_el.get_text(strip=True))
+            except ValueError:
                 continue
-            if min(home_f, draw_f, away_f) <= 1.0:
+            if price <= 1.0:
                 continue
-            events.append(
-                {
-                    "event": str(name),
-                    "market": "1X2",
-                    "odds": {"home": home_f, "draw": draw_f, "away": away_f},
-                }
-            )
+
+            name_el = cell.select_one(".seln-name")
+            label = name_el.get_text(strip=True) if name_el else ""
+
+            if "seln_sort-D" in classes or "seln_sort-H" in classes:
+                # Playtech uses seln_sort-D for draw on 1X2
+                if "seln_sort-D" in classes and draw is None:
+                    draw = price
+                continue
+
+            # home/away: first named selection -> home, second -> away
+            if home is None:
+                home = price
+                home_name = label
+            elif away is None:
+                away = price
+                away_name = label
+
+        if home is None or draw is None or away is None:
+            continue
+        # Keep only realistic 1X2 prices (filters wrong market types).
+        if max(home, draw, away) > 40 or min(home, draw, away) < 1.01:
+            continue
+        if not home_name or not away_name:
+            # try event anchor
+            event_a = mkt.find_previous("a", href=re.compile(r"/es/e/"))
+            if event_a:
+                title = event_a.get_text(" ", strip=True)
+                if " vs " in title.lower() or " v " in title.lower():
+                    event_name = re.sub(r"\s+v(?:s)?\s+", " vs ", title, flags=re.I)
+                else:
+                    continue
+            else:
+                continue
+        else:
+            event_name = f"{home_name} vs {away_name}"
+
+        event_name = normalize_event_name(event_name)
+        if not event_name or event_name in seen:
+            continue
+        seen.add(event_name)
+        events.append(
+            {
+                "event": event_name,
+                "market": "1X2",
+                "odds": {"home": home, "draw": draw, "away": away},
+            }
+        )
     return events
-
-
-def _mock_wplay_events() -> list[dict[str, Any]]:
-    return [
-        {
-            "event": "EquipoA vs EquipoB",
-            "market": "1X2",
-            "odds": {"home": 1.9, "draw": 3.4, "away": 3.2},
-        },
-        {
-            "event": "Colombia vs Brasil",
-            "market": "1X2",
-            "odds": {"home": 2.95, "draw": 3.35, "away": 2.45},
-        },
-    ]
 
 
 class WplayScraper:

@@ -1,0 +1,179 @@
+{
+  "generated_at": "2026-08-06T19:41:35.190912+00:00",
+  "objective": "Explain why real Telegram alerts never arrive after startup message",
+  "verdict": {
+    "startup_telegram_works": true,
+    "cycle_alerts_after_startup": false,
+    "root_cause_primary": "Scrapers never obtain real odds; URLs return HTML/404, not JSON fixtures.",
+    "root_cause_secondary_historical": "On API failure, scrapers previously injected mock 'Colombia vs Brasil' (~0.77%). First cycle could alert once; later cycles blocked by save_if_new duplicate fingerprint, so main.py never called send_telegram_message again.",
+    "root_cause_after_mock_removal": "All books return 0 partidos → 0 mercados → 0 oportunidades → Telegram cycle path never invoked.",
+    "real_data_in_any_scan": false
+  },
+  "mock_status": {
+    "colombia_vs_brasil_mock_removed_from_scrapers": true,
+    "files_cleaned": [
+      "scrapers/betano.py",
+      "scrapers/wplay.py",
+      "scrapers/betplay.py",
+      "scrapers/rushbet.py",
+      "scrapers/zamba.py"
+    ],
+    "codere_already_no_mock": true,
+    "scrapers_return_empty_on_http_failure": true,
+    "note": "Previously Betano/Wplay/BetPlay/RushBet/Zamba returned hardcoded Colombia vs Brasil / EquipoA vs EquipoB on API failure"
+  },
+  "http_probes": [
+    {
+      "book": "betano",
+      "url": "https://www.betano.com/api/sport/football/fixtures",
+      "http_status": 404,
+      "json_ok": false,
+      "events_in_json": null,
+      "body_preview": "<!DOCTYPE html> ...",
+      "real_data": false
+    },
+    {
+      "book": "wplay",
+      "url": "https://www.wplay.co/api/sport/football/fixtures",
+      "http_status": 200,
+      "json_ok": false,
+      "events_in_json": null,
+      "body_preview": "<!doctype html> Playtech shell ...",
+      "real_data": false
+    },
+    {
+      "book": "betplay",
+      "url": "https://www.betplay.com.co/api/sport/football/fixtures",
+      "http_status": 200,
+      "json_ok": false,
+      "events_in_json": null,
+      "body_preview": "<!DOCTYPE html> Angular shell ...",
+      "real_data": false
+    },
+    {
+      "book": "codere",
+      "url": "https://www.codere.com.co/api/sport/football/fixtures",
+      "http_status": 404,
+      "json_ok": false,
+      "events_in_json": null,
+      "body_preview": "SharePointError HTML ...",
+      "real_data": false
+    },
+    {
+      "book": "rushbet",
+      "url": "https://www.rushbet.co/api/sport/football/fixtures",
+      "http_status": 404,
+      "json_ok": false,
+      "events_in_json": null,
+      "body_preview": "404 page not found",
+      "real_data": false
+    },
+    {
+      "book": "zamba",
+      "url": "https://www.zamba.co/api/sport/football/fixtures",
+      "http_status": 200,
+      "json_ok": false,
+      "events_in_json": null,
+      "body_preview": "<!doctype html> SPA shell ...",
+      "real_data": false
+    }
+  ],
+  "any_real_book_data": false,
+  "alert_path_analysis": {
+    "startup_message": "SI — send_startup_message() / TelegramAlerter.send_message() al boot; independiente de scrapers",
+    "cycle_function": "main.run_scan_cycle() → opportunities = ArbScanner.run_once() → for opp: format_alert + send_telegram_message()",
+    "run_once_returns": "SOLO newly_saved (save_if_new=True). Duplicados NUNCA llegan a send_telegram_message()",
+    "send_function_actual_name": "send_telegram_message (no existe send_telegram_alert)",
+    "blocking_conditions_when_opp_exists": [
+      "save_if_new=False (mismo fingerprint) → opp no se retorna a main → send NO llamado",
+      "0 quotes tras scrape → run_once return [] → send NO llamado",
+      "token/chat missing → send_telegram_message retorna False (startup ya demostró que credenciales sí funcionan)"
+    ],
+    "why_colombia_0_77_repeated_on_server": "Mock odds nearly identical each cycle → same event/legs/profit fingerprint → duplicate skip after first insert"
+  },
+  "scans": [
+    {
+      "scan_id": "SCAN #001",
+      "casas_consultadas": {
+        "Betano": {"partidos_encontrados": 0, "estado": "HTTP fail/no JSON → []"},
+        "Wplay": {"partidos_encontrados": 0, "estado": "HTML 200 no JSON → []"},
+        "BetPlay": {"partidos_encontrados": 0, "estado": "HTML 200 no JSON → []"},
+        "Codere": {"partidos_encontrados": 0, "estado": "error 404 → []"},
+        "RushBet": {"partidos_encontrados": 0, "estado": "404 → []"},
+        "Zamba": {"partidos_encontrados": 0, "estado": "HTML 200 no JSON → []"}
+      },
+      "total_partidos_unicos": 0,
+      "total_mercados_analizados": 0,
+      "arbitraje": {
+        "oportunidades_calculadas": 0,
+        "oportunidades_descartadas": 0,
+        "motivo_descarte": "N/A — no hubo quotes reales para calcular",
+        "ge_0_5": 0,
+        "ge_1_0": 0,
+        "ge_1_5": 0
+      },
+      "telegram": {
+        "oportunidades_evaluadas": 0,
+        "send_telegram_alert_called": "NO",
+        "bloqueado_por": "run_scan_cycle early-return: opportunities == [] (no hay datos reales ni mocks)"
+      }
+    },
+    {
+      "scan_id": "SCAN #002",
+      "casas_consultadas": {
+        "Betano": {"partidos_encontrados": 0, "estado": "HTTP fail/no JSON → []"},
+        "Wplay": {"partidos_encontrados": 0, "estado": "HTML 200 no JSON → []"},
+        "BetPlay": {"partidos_encontrados": 0, "estado": "HTML 200 no JSON → []"},
+        "Codere": {"partidos_encontrados": 0, "estado": "error 404 → []"},
+        "RushBet": {"partidos_encontrados": 0, "estado": "404 → []"},
+        "Zamba": {"partidos_encontrados": 0, "estado": "HTML 200 no JSON → []"}
+      },
+      "total_partidos_unicos": 0,
+      "total_mercados_analizados": 0,
+      "arbitraje": {
+        "oportunidades_calculadas": 0,
+        "oportunidades_descartadas": 0,
+        "motivo_descarte": "N/A — no hubo quotes reales para calcular",
+        "ge_0_5": 0,
+        "ge_1_0": 0,
+        "ge_1_5": 0
+      },
+      "telegram": {
+        "oportunidades_evaluadas": 0,
+        "send_telegram_alert_called": "NO",
+        "bloqueado_por": "run_scan_cycle early-return: opportunities == []"
+      }
+    },
+    {
+      "scan_id": "SCAN #003",
+      "casas_consultadas": {
+        "Betano": {"partidos_encontrados": 0, "estado": "HTTP fail/no JSON → []"},
+        "Wplay": {"partidos_encontrados": 0, "estado": "HTML 200 no JSON → []"},
+        "BetPlay": {"partidos_encontrados": 0, "estado": "HTML 200 no JSON → []"},
+        "Codere": {"partidos_encontrados": 0, "estado": "error 404 → []"},
+        "RushBet": {"partidos_encontrados": 0, "estado": "404 → []"},
+        "Zamba": {"partidos_encontrados": 0, "estado": "HTML 200 no JSON → []"}
+      },
+      "total_partidos_unicos": 0,
+      "total_mercados_analizados": 0,
+      "arbitraje": {
+        "oportunidades_calculadas": 0,
+        "oportunidades_descartadas": 0,
+        "motivo_descarte": "N/A — no hubo quotes reales para calcular",
+        "ge_0_5": 0,
+        "ge_1_0": 0,
+        "ge_1_5": 0
+      },
+      "telegram": {
+        "oportunidades_evaluadas": 0,
+        "send_telegram_alert_called": "NO",
+        "bloqueado_por": "run_scan_cycle early-return: opportunities == []"
+      }
+    }
+  ],
+  "not_fixed_yet": [
+    "No se implementaron APIs reales de casas",
+    "No se modificó Telegram",
+    "No se cambió algoritmo de arbitraje ni probabilidades"
+  ]
+}

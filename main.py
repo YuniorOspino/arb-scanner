@@ -8,13 +8,13 @@ import signal
 import sys
 import time
 
+from alerts.formatter import format_arbitrage_alert
 from alerts.telegram import (
     TelegramAlerter,
-    format_alert,
     send_telegram_message,
+    verify_opportunity_odds,
 )
 from config import get_config, setup_logging
-from core.models import ArbitrageOpportunity
 from core.scanner import ArbScanner
 from scrapers import build_scrapers
 from storage.database import OpportunityStore
@@ -50,77 +50,38 @@ def send_startup_message(alerter: TelegramAlerter | None) -> None:
         logger.warning("Startup Telegram message not sent (check token/chat_id)")
 
 
-def _opportunity_to_event(opp: ArbitrageOpportunity) -> dict:
-    import re
-
-    from core.arbitrage import calculate_arbitrage_stakes, calculate_dynamic_stake
-
-    parts = re.split(r"\s+vs\.?\s+|\s+v\.?\s+|\s+-\s+", opp.event_name, flags=re.IGNORECASE)
-    local = parts[0].strip() if len(parts) >= 2 else "equipo local"
-    away = parts[1].strip() if len(parts) >= 2 else "equipo visitante"
-
-    outcome_label = {
-        "home": f"que gana {local}",
-        "1": f"que gana {local}",
-        "draw": "empate",
-        "x": "empate",
-        "away": f"que gana {away}",
-        "2": f"que gana {away}",
-    }
-
-    dynamic_stake = calculate_dynamic_stake(opp.profit_percent)
-    odds_map = {outcome: odds for _book, outcome, odds, _stake in opp.legs}
-    stakes_info = calculate_arbitrage_stakes(
-        odds_map, dynamic_stake, labels=list(odds_map.keys())
-    )
-    stakes_by_outcome = stakes_info.get("stakes", {})
-
-    books = []
-    outcomes: dict[str, str] = {}
-    stakes_by_book: dict[str, float] = {}
-    seen = set()
-
-    for book, outcome, _odds, _stake in opp.legs:
-        label = outcome_label.get(str(outcome).lower(), str(outcome))
-        if book not in seen:
-            seen.add(book)
-            books.append(book)
-        outcomes[book] = label
-        stakes_by_book[book] = float(
-            stakes_by_outcome.get(outcome, stakes_by_outcome.get(str(outcome).lower(), 0))
-            or (dynamic_stake / max(len(opp.legs), 1))
-        )
-
-    return {
-        "match": opp.event_name,
-        "books": books,
-        "outcomes": outcomes,
-        "stakes": stakes_by_book,
-        "stake": dynamic_stake,
-    }
-
-
 def run_scan_cycle() -> None:
     if _scanner is None:
         raise RuntimeError("Scanner not initialized")
 
-    # Persist only inside scanner; Telegram send happens here with classification
     opportunities = _scanner.run_once()
     if not opportunities:
         logger.info("No se encontraron oportunidades en este ciclo.")
         return
 
     logger.info("Ciclo con %d oportunidad(es)", len(opportunities))
+    quote_cache: dict = {}
     for opp in opportunities:
-        event = _opportunity_to_event(opp)
-        message = format_alert(event, opp.profit_percent)
+        still_valid = verify_opportunity_odds(
+            opp,
+            _scanner.scrapers,
+            quote_cache=quote_cache,
+        )
+        if not still_valid:
+            logger.warning(
+                "Oportunidad descartada (cuotas ausentes o cambiaron): %s",
+                opp.event_name,
+            )
+            continue
+
+        message = format_arbitrage_alert(opp)
         sent = send_telegram_message(
             message,
             bot_token=TELEGRAM_TOKEN,
             chat_id=TELEGRAM_CHAT_ID,
         )
         logger.info(
-            "Alert sent=%s event=%s profit=%.2f%%",
+            "Alert sent=%s event=%s profit=%s",
             sent,
             opp.event_name,
             opp.profit_percent,
@@ -168,7 +129,9 @@ def main() -> int:
 
     store = OpportunityStore(cfg.database_path)
     alerter = _build_alerter()
-    # alerter=None avoids duplicate Telegram sends from scanner; main sends classified alerts
+    if alerter is not None:
+        alerter.scrapers = scrapers
+    # alerter=None avoids duplicate Telegram sends from scanner; main sends alerts
     _scanner = ArbScanner(cfg, scrapers, store, alerter=None)
 
     send_startup_message(alerter)

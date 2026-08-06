@@ -7,56 +7,89 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-CODERE_URL = "https://www.codere.com.co/api/sport/football/fixtures"
-TIMEOUT = 10.0
+# Codere CO SPA: https://m.codere.com.co/deportesCol/
+# Sports catalog endpoint used by the web app (csbgonline).
+CODERE_SPORTS_URL = "https://m.codere.com.co/csbgonline/home/GetSports"
+CODERE_SPORT_BY_HANDLE_URL = (
+    "https://m.codere.com.co/csbgonline/home/GetSportBySportHandle"
+)
+TIMEOUT = 15.0
+BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "es-CO,es;q=0.9",
+    "Referer": "https://m.codere.com.co/deportesCol/",
+    "Origin": "https://m.codere.com.co",
+    "X-Requested-With": "XMLHttpRequest",
+}
 
-
-def fetch_codere_quotes() -> dict[str, Any]:
-    try:
-        response = requests.get(
-            CODERE_URL,
-            timeout=TIMEOUT,
-            headers={"User-Agent": "arb-scanner/1.0"},
-        )
-        response.raise_for_status()
-        try:
-            data = response.json()
-        except ValueError:
-            logger.warning(
-                "Codere devolvio respuesta vacia o invalida, se continua sin datos."
-            )
-            return {}
-        if not isinstance(data, dict):
-            logger.warning(
-                "Codere devolvio JSON no-objeto, se continua sin datos."
-            )
-            return {}
-        return data
-    except requests.RequestException as e:
-        logger.warning("Codere API error: %s", e)
-        return {}
+_CODERE_JUSTIFICATION = (
+    "Codere CO: endpoint real csbgonline/home/GetSports responde 200 con [] "
+    "(catalogo vacio). GetSportBySportHandle responde 204. "
+    "SportsMisc/api existe pero no expone controllers Game/Home (404). "
+    "Quantum (madrid.pe.quantum-sports.net/dig-codere-*) responde 404. "
+    "Sin feed publico de cuotas disponible en este momento."
+)
 
 
 def scrape_codere() -> list[dict[str, Any]]:
-    data = fetch_codere_quotes()
-    if not data:
+    session = requests.Session()
+    session.headers.update(BROWSER_HEADERS)
+    try:
+        # Warm cookies like the SPA.
+        session.get("https://m.codere.com.co/deportesCol/", timeout=TIMEOUT)
+        response = session.get(CODERE_SPORTS_URL, timeout=TIMEOUT)
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        logger.warning("Codere scrape failed: %s | %s", exc, _CODERE_JUSTIFICATION)
         return []
-    events = parse_codere_data(data)
-    logger.info("Codere scrape returned %d events", len(events))
-    return events
+
+    events = parse_codere_data(payload)
+    if events:
+        logger.info("Codere scrape returned %d events", len(events))
+        return events
+
+    # Confirm sport-by-handle is also empty/no-content.
+    try:
+        by_handle = session.get(
+            CODERE_SPORT_BY_HANDLE_URL,
+            params={"sportHandle": "soccer"},
+            timeout=TIMEOUT,
+        )
+        logger.warning(
+            "%s (GetSports=%r status_by_handle=%s)",
+            _CODERE_JUSTIFICATION,
+            payload,
+            by_handle.status_code,
+        )
+    except requests.RequestException:
+        logger.warning("%s", _CODERE_JUSTIFICATION)
+    return []
 
 
 def parse_codere_data(payload: Any) -> list[dict[str, Any]]:
+    """Parse Codere sports payload if/when the catalog is non-empty."""
     events: list[dict[str, Any]] = []
-    raw_events = payload.get("events") if isinstance(payload, dict) else None
+
+    if isinstance(payload, list):
+        raw_events = payload
+    elif isinstance(payload, dict):
+        raw_events = payload.get("events") or payload.get("Sports") or payload.get("sports") or []
+    else:
+        return events
+
     if not isinstance(raw_events, list):
         return events
 
     for item in raw_events:
         if not isinstance(item, dict):
             continue
-        name = item.get("name") or item.get("event")
-        markets = item.get("markets") or []
+        name = item.get("name") or item.get("event") or item.get("EventName")
+        markets = item.get("markets") or item.get("Markets") or []
         if not name or not isinstance(markets, list):
             continue
         for market in markets:

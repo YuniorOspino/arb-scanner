@@ -7,6 +7,7 @@ from alerts.telegram import (
     send_arbitrage_alert_telegram,
     send_telegram_message,
     send_value_bet_alert,
+    verify_opportunity_odds,
 )
 
 __all__ = [
@@ -17,4 +18,5 @@ __all__ = [
     "send_arbitrage_alert_telegram",
     "send_telegram_message",
     "send_value_bet_alert",
+    "verify_opportunity_odds",
 ]

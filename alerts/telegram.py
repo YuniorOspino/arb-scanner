@@ -4,64 +4,104 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Iterable
 
 import requests
 
-from alerts.formatter import format_value_bet_alert
-from core.models import ArbitrageOpportunity
+from alerts.formatter import format_arbitrage_alert, format_value_bet_alert
+from core.models import ArbitrageOpportunity, OddsQuote
+from scrapers.base import BaseScraper
 
 logger = logging.getLogger(__name__)
 
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
-RENTABLE_THRESHOLD = 1.50
 
 
 def format_alert(event: dict, profit: float) -> str:
-    """Build Telegram message with classification, stake and betting instructions."""
-    from core.arbitrage import calculate_dynamic_stake
+    """Backward-compatible wrapper; prefer format_arbitrage_alert(opportunity)."""
+    payload = dict(event)
+    payload.setdefault("profit_percent", profit)
+    payload.setdefault("margen", profit)
+    if "match" in payload and "evento" not in payload:
+        payload["evento"] = payload["match"]
+    return format_arbitrage_alert(payload)
 
-    profit_f = float(profit)
-    stake = calculate_dynamic_stake(profit_f)
-    status = (
-        "✅ Cuota rentable" if profit_f >= RENTABLE_THRESHOLD else "⚠️ Cuota poco rentable"
-    )
 
-    books = event.get("books") or []
-    if isinstance(books, str):
-        books_list = [b.strip() for b in books.split(",") if b.strip()]
-        books_str = books
-    else:
-        books_list = list(books)
-        books_str = ", ".join(str(b) for b in books_list)
+def verify_opportunity_odds(
+    opportunity: ArbitrageOpportunity,
+    scrapers: Iterable[BaseScraper],
+    *,
+    quote_cache: dict[str, list[OddsQuote]] | None = None,
+) -> bool:
+    """
+    Re-check live quotes before sending.
 
-    outcomes = event.get("outcomes") or {}
-    stakes_by_book = event.get("stakes") or {}
+    Returns False (and caller must discard) if any leg is missing or its odds
+    differ from the exact values used by the scanner.
+    """
+    cache = quote_cache if quote_cache is not None else {}
+    scrapers_by_name = {s.bookmaker_name: s for s in scrapers}
 
-    instruction_lines = []
-    for book in books_list:
-        outcome = outcomes.get(book) or outcomes.get(str(book).lower()) or "resultado"
-        book_stake = stakes_by_book.get(book, stakes_by_book.get(str(book).lower(), stake))
-        try:
-            book_stake_f = float(book_stake)
-        except (TypeError, ValueError):
-            book_stake_f = stake
-        instruction_lines.append(
-            f"- {book}: {book_stake_f:.0f} COP a {outcome}"
-        )
+    for bookmaker, outcome, expected_odds, _stake in opportunity.legs:
+        scraper = scrapers_by_name.get(bookmaker)
+        if scraper is None:
+            logger.warning(
+                "Descartada: scraper ausente para casa=%s event=%s",
+                bookmaker,
+                opportunity.event_name,
+            )
+            return False
 
-    if not instruction_lines:
-        instruction_lines = [f"- Stake total sugerido: {stake:.0f} COP"]
+        if bookmaker not in cache:
+            try:
+                cache[bookmaker] = scraper.fetch_odds()
+            except Exception:
+                logger.exception(
+                    "Descartada: error re-leyendo cuotas de %s", bookmaker
+                )
+                return False
 
-    instructions = "\n".join(instruction_lines)
+        current = None
+        for quote in cache[bookmaker]:
+            if (
+                quote.event_name == opportunity.event_name
+                and quote.outcome == outcome
+                and quote.market_id == opportunity.market_type
+            ):
+                current = quote.odds
+                break
+        # Fallback: same event/outcome even if market_id empty on some quotes.
+        if current is None:
+            for quote in cache[bookmaker]:
+                if (
+                    quote.event_name == opportunity.event_name
+                    and quote.outcome == outcome
+                ):
+                    current = quote.odds
+                    break
 
-    return (
-        f"{status}\n"
-        f"Evento: {event.get('match', 'Evento desconocido')}\n"
-        f"Casas: {books_str}\n"
-        f"Profit: {profit_f:.2f}%\n"
-        f"Stake sugerido: {stake:.0f} COP\n\n"
-        f"👉 Apuesta:\n{instructions}"
-    )
+        if current is None:
+            logger.warning(
+                "Descartada: cuota ausente antes de envio | casa=%s outcome=%s event=%s",
+                bookmaker,
+                outcome,
+                opportunity.event_name,
+            )
+            return False
+
+        if current != expected_odds:
+            logger.warning(
+                "Descartada: cuota cambio antes de envio | casa=%s outcome=%s "
+                "event=%s expected=%s current=%s",
+                bookmaker,
+                outcome,
+                opportunity.event_name,
+                expected_odds,
+                current,
+            )
+            return False
+
+    return True
 
 
 def send_telegram_message(
@@ -105,7 +145,7 @@ def _post_telegram(
     payload = {
         "chat_id": chat_id,
         "text": message,
-        "disable_web_page_preview": True,
+        "disable_web_page_preview": False,
     }
     try:
         resp = requests.post(url, json=payload, timeout=timeout)
@@ -145,84 +185,47 @@ def send_arbitrage_alert_telegram(
     chat_id: str,
     *,
     timeout: float = 15.0,
+    scrapers: Iterable[BaseScraper] | None = None,
+    skip_verification: bool = False,
 ) -> bool:
-    import re
+    """
+    Format and send an arb alert.
 
-    from core.arbitrage import calculate_arbitrage_stakes, calculate_dynamic_stake
+    If scrapers are provided, re-validates exact odds before sending.
+    """
+    if isinstance(opportunity, dict):
+        from alerts.formatter import opportunity_from_payload
 
-    if isinstance(opportunity, ArbitrageOpportunity):
-        profit = float(opportunity.profit_percent)
-        stake = calculate_dynamic_stake(profit)
-        parts = re.split(
-            r"\s+vs\.?\s+|\s+v\.?\s+|\s+-\s+",
-            opportunity.event_name,
-            flags=re.IGNORECASE,
-        )
-        local = parts[0].strip() if len(parts) >= 2 else "equipo local"
-        visitante = parts[1].strip() if len(parts) >= 2 else "equipo visitante"
-        labels = {
-            "home": f"que gana {local}",
-            "draw": "empate",
-            "away": f"que gana {visitante}",
-        }
-        odds_map = {o: od for _b, o, od, _s in opportunity.legs}
-        stakes_by_outcome = calculate_arbitrage_stakes(
-            odds_map, stake, labels=list(odds_map.keys())
-        ).get("stakes", {})
-
-        books, outcomes, stakes_by_book = [], {}, {}
-        seen = set()
-        for book, outcome, _od, _s in opportunity.legs:
-            if book not in seen:
-                seen.add(book)
-                books.append(book)
-            outcomes[book] = labels.get(str(outcome).lower(), str(outcome))
-            stakes_by_book[book] = float(
-                stakes_by_outcome.get(outcome, stake / max(len(opportunity.legs), 1))
-            )
-        event = {
-            "match": opportunity.event_name,
-            "books": books,
-            "outcomes": outcomes,
-            "stakes": stakes_by_book,
-            "stake": stake,
-        }
+        model = opportunity_from_payload(opportunity)
     else:
-        profit = float(
-            opportunity.get("profit_percent", opportunity.get("margen", 0)) or 0
-        )
-        stake = calculate_dynamic_stake(profit)
-        books = list(
-            opportunity.get("casas_involucradas")
-            or opportunity.get("casas")
-            or []
-        )
-        mejores = opportunity.get("mejores_cuotas") or {}
-        outcomes = opportunity.get("outcomes") or {}
-        stakes_by_book = opportunity.get("stakes") or {}
-        if isinstance(mejores, dict) and not outcomes:
-            for outcome, info in mejores.items():
-                if isinstance(info, dict) and info.get("casa"):
-                    outcomes[str(info["casa"])] = str(outcome)
-        event = {
-            "match": opportunity.get("evento") or opportunity.get("event_name", "?"),
-            "books": books,
-            "outcomes": outcomes,
-            "stakes": stakes_by_book if isinstance(stakes_by_book, dict) else {},
-            "stake": stake,
-        }
+        model = opportunity
 
-    message = format_alert(event, profit)
+    if not skip_verification and scrapers is not None:
+        if not verify_opportunity_odds(model, scrapers):
+            logger.warning(
+                "Alerta no enviada: oportunidad descartada por cuotas | %s",
+                model.event_name,
+            )
+            return False
+
+    message = format_arbitrage_alert(model)
     return _post_telegram(bot_token, chat_id, message, timeout=timeout)
 
 
 class TelegramAlerter:
     """Send arb alerts via Telegram Bot API."""
 
-    def __init__(self, bot_token: str, chat_id: str, enabled: bool = True) -> None:
+    def __init__(
+        self,
+        bot_token: str,
+        chat_id: str,
+        enabled: bool = True,
+        scrapers: Iterable[BaseScraper] | None = None,
+    ) -> None:
         self.bot_token = bot_token
         self.chat_id = chat_id
         self.enabled = enabled and bool(bot_token and chat_id)
+        self.scrapers = list(scrapers) if scrapers is not None else None
 
         if not self.enabled:
             logger.warning(
@@ -244,7 +247,10 @@ class TelegramAlerter:
             logger.debug("Telegram disabled; opportunity not sent")
             return False
         return send_arbitrage_alert_telegram(
-            opportunity, self.bot_token, self.chat_id
+            opportunity,
+            self.bot_token,
+            self.chat_id,
+            scrapers=self.scrapers,
         )
 
     def send_value_bet(self, value_bet: dict) -> bool:
