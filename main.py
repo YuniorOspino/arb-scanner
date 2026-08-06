@@ -8,8 +8,14 @@ import signal
 import sys
 import time
 
-from alerts.telegram import TelegramAlerter
+from alerts.formatter import format_arbitrage_alert
+from alerts.telegram import (
+    TelegramAlerter,
+    format_alert,
+    send_telegram_message,
+)
 from config import get_config, setup_logging
+from core.models import ArbitrageOpportunity
 from core.scanner import ArbScanner
 from scrapers import build_scrapers
 from storage.database import OpportunityStore
@@ -19,7 +25,6 @@ logger = logging.getLogger(__name__)
 _shutdown = False
 _scanner: ArbScanner | None = None
 
-# Prefer Railway-style TELEGRAM_TOKEN; fall back to TELEGRAM_BOT_TOKEN
 TELEGRAM_TOKEN = (
     os.getenv("TELEGRAM_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or ""
 ).strip()
@@ -33,7 +38,6 @@ def _handle_signal(signum: int, _frame: object) -> None:
 
 
 def send_startup_message(alerter: TelegramAlerter | None) -> None:
-    """Envía confirmación a Telegram al iniciar el motor."""
     if alerter is None or not alerter.enabled:
         logger.warning("Skipping startup Telegram message (alerter disabled)")
         return
@@ -47,17 +51,46 @@ def send_startup_message(alerter: TelegramAlerter | None) -> None:
         logger.warning("Startup Telegram message not sent (check token/chat_id)")
 
 
+def _opportunity_to_event(opp: ArbitrageOpportunity) -> dict:
+    books = []
+    seen = set()
+    for book, _outcome, _odds, _stake in opp.legs:
+        if book not in seen:
+            seen.add(book)
+            books.append(book)
+    return {
+        "match": opp.event_name,
+        "books": books,
+        "stake": opp.total_stake,
+        "detail": format_arbitrage_alert(opp),
+    }
+
+
 def run_scan_cycle() -> None:
-    """Ejecuta un ciclo de escaneo. Errores se manejan en el loop principal."""
     if _scanner is None:
         raise RuntimeError("Scanner not initialized")
 
-    # Scrapers que devuelven [] se omiten dentro de ArbScanner.collect_quotes
+    # Persist only inside scanner; Telegram send happens here with classification
     opportunities = _scanner.run_once()
-    if opportunities:
-        logger.info("Ciclo con %d oportunidad(es)", len(opportunities))
-    else:
+    if not opportunities:
         logger.info("No se encontraron oportunidades en este ciclo.")
+        return
+
+    logger.info("Ciclo con %d oportunidad(es)", len(opportunities))
+    for opp in opportunities:
+        event = _opportunity_to_event(opp)
+        message = format_alert(event, opp.profit_percent)
+        sent = send_telegram_message(
+            message,
+            bot_token=TELEGRAM_TOKEN,
+            chat_id=TELEGRAM_CHAT_ID,
+        )
+        logger.info(
+            "Alert sent=%s event=%s profit=%.2f%%",
+            sent,
+            opp.event_name,
+            opp.profit_percent,
+        )
 
 
 def _build_alerter() -> TelegramAlerter | None:
@@ -101,7 +134,8 @@ def main() -> int:
 
     store = OpportunityStore(cfg.database_path)
     alerter = _build_alerter()
-    _scanner = ArbScanner(cfg, scrapers, store, alerter)
+    # alerter=None avoids duplicate Telegram sends from scanner; main sends classified alerts
+    _scanner = ArbScanner(cfg, scrapers, store, alerter=None)
 
     send_startup_message(alerter)
 

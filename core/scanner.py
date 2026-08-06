@@ -72,17 +72,24 @@ class ArbScanner:
         opportunities = find_opportunities(
             markets,
             total_stake=self.config.max_stake_total,
-            min_profit_percent=self.config.min_profit_percent,
+            # Include low-profit arbs; Telegram classifies rentable vs poco rentable
+            min_profit_percent=0.0,
         )
 
+        newly_saved: list[ArbitrageOpportunity] = []
         for opp in opportunities:
             is_new = self.store.save_if_new(opp)
             if is_new:
+                newly_saved.append(opp)
                 logger.info("New opportunity persisted: %s", opp.event_name)
                 if self.alerter:
                     self.alerter.send_opportunity(opp)
             else:
                 logger.debug("Duplicate opportunity skipped: %s", opp.event_name)
 
-        logger.info("=== Scan cycle done (%d opps) ===", len(opportunities))
-        return opportunities
+        logger.info(
+            "=== Scan cycle done (%d found, %d new) ===",
+            len(opportunities),
+            len(newly_saved),
+        )
+        return newly_saved
