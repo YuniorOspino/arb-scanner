@@ -1,4 +1,4 @@
-"""arb-scanner entrypoint: continuous scan loop."""
+"""arb-scanner entrypoint: continuous scan loop with Telegram startup ping."""
 
 from __future__ import annotations
 
@@ -24,17 +24,29 @@ def _handle_signal(signum: int, _frame: object) -> None:
     _shutdown = True
 
 
+def send_startup_message(alerter: TelegramAlerter) -> None:
+    """Envía confirmación a Telegram al iniciar el motor."""
+    ok = alerter.send_message(
+        "El motor arb-scanner inicio y esta buscando oportunidades."
+    )
+    if ok:
+        logger.info("Startup Telegram message sent")
+    else:
+        logger.warning("Startup Telegram message not sent (check token/chat_id)")
+
+
 def main() -> int:
     setup_logging()
     cfg = get_config()
 
     logger.info("arb-scanner starting")
     logger.info(
-        "Config: interval=%ss min_profit=%.2f%% stake=%.2f books=%s",
+        "Config: interval=%ss min_profit=%.2f%% stake=%.2f books=%s tg=%s",
         cfg.scan_interval_seconds,
         cfg.min_profit_percent,
         cfg.max_stake_total,
         ", ".join(cfg.active_bookmakers),
+        cfg.telegram_enabled,
     )
     logger.debug("Database path: %s", cfg.database_path)
 
@@ -51,13 +63,21 @@ def main() -> int:
     )
     scanner = ArbScanner(cfg, scrapers, store, alerter)
 
+    # Mensaje de prueba / confirmacion al arrancar
+    send_startup_message(alerter)
+
     signal.signal(signal.SIGINT, _handle_signal)
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, _handle_signal)
 
+    # Bucle principal del motor
     while not _shutdown:
         try:
-            scanner.run_once()
+            opportunities = scanner.run_once()
+            if opportunities:
+                logger.info("Ciclo con %d oportunidad(es)", len(opportunities))
+            else:
+                logger.info("No se encontraron oportunidades en este ciclo.")
         except Exception:
             logger.exception("Unhandled error in scan cycle")
 
@@ -65,7 +85,6 @@ def main() -> int:
             break
 
         logger.info("Sleeping %s seconds until next scan", cfg.scan_interval_seconds)
-        # Interruptible sleep
         for _ in range(cfg.scan_interval_seconds):
             if _shutdown:
                 break
