@@ -11,7 +11,7 @@ CODERE_URL = "https://www.codere.com.co/api/sport/football/fixtures"
 TIMEOUT = 10.0
 
 
-def scrape_codere() -> list[dict[str, Any]]:
+def fetch_codere_quotes() -> dict[str, Any]:
     try:
         response = requests.get(
             CODERE_URL,
@@ -19,19 +19,31 @@ def scrape_codere() -> list[dict[str, Any]]:
             headers={"User-Agent": "arb-scanner/1.0"},
         )
         response.raise_for_status()
-        data = response.json()
-        events = parse_codere_data(data)
-        logger.info("Codere scrape returned %d events", len(events))
-        return events
-    except requests.exceptions.HTTPError as e:
+        try:
+            data = response.json()
+        except ValueError:
+            logger.warning(
+                "Codere devolvio respuesta vacia o invalida, se continua sin datos."
+            )
+            return {}
+        if not isinstance(data, dict):
+            logger.warning(
+                "Codere devolvio JSON no-objeto, se continua sin datos."
+            )
+            return {}
+        return data
+    except requests.RequestException as e:
         logger.warning("Codere API error: %s", e)
+        return {}
+
+
+def scrape_codere() -> list[dict[str, Any]]:
+    data = fetch_codere_quotes()
+    if not data:
         return []
-    except requests.exceptions.RequestException as e:
-        logger.warning("Codere request failed: %s", e)
-        return []
-    except Exception as e:
-        logger.error("Unexpected error in Codere scraper: %s", e)
-        return []
+    events = parse_codere_data(data)
+    logger.info("Codere scrape returned %d events", len(events))
+    return events
 
 
 def parse_codere_data(payload: Any) -> list[dict[str, Any]]:
