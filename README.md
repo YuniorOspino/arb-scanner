@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # arb-scanner
 
 Scanner de arbitraje deportivo: scrapea cuotas de varias casas, calcula oportunidades, las guarda en SQLite y alerta por Telegram.
@@ -79,3 +80,6 @@ Niveles activos desde el arranque:
 - `INFO` — ciclos, scrapers, arbs encontrados, alertas
 - `DEBUG` — detalle de cuotas, fingerprints, agrupación
 - `ERROR` — fallos de scraper, API Telegram, SQLite
+=======
+# arb-scanner
+>>>>>>> 47f22b9bca3d748526f2ddce722b155437c6dfa1
