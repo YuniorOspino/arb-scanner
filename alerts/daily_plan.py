@@ -4,12 +4,16 @@ Plan diario controlado de generación de ingresos.
 Arquitectura (v1):
   EM → alerta VALIDA → enrich quality
     → daily_plan.classify()     → arbitraje | conservadora | combinada
-    → daily_plan.should_send()  → riesgo / cuotas diarias / target
-    → Telegram formato por tipo + progreso al target
+    → daily_plan.should_send()  → freno = DAILY_RISK_CAP (no la ganancia)
+    → Telegram formato por tipo + progreso a la meta mínima
     → daily_plan.record_sent()
 
-Principios: controlado > agresivo, calidad > cantidad, arb siempre primero.
-Persistencia simple: data/daily_plan_YYYY-MM-DD.json
+DAILY_PROFIT_TARGET = meta MÍNIMA (piso), no techo.
+Tras cumplirla: seguir ARBITRAJES; reducir conservadora/combinada (formato).
+Freno real: DAILY_RISK_CAP.
+
+Principios: maximizar el día con control de riesgo; arb siempre primero.
+Persistencia: data/daily_plan_YYYY-MM-DD.json
 """
 
 from __future__ import annotations
@@ -23,13 +27,38 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from alerts.quality_score import (
-    enrich_alerta_quality,
-    get_quality_score_min,
-    pick_recommended_leg,
-)
+from alerts.quality_score import enrich_alerta_quality, get_quality_score_min
+
+try:
+    from alerts.quality_score import pick_recommended_leg as _pick_recommended_leg
+except ImportError:  # Railway / deploy parcial: no tumbar main.py
+    _pick_recommended_leg = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
+
+
+def pick_recommended_leg(alerta: dict) -> dict[str, Any] | None:
+    """Pierna principal (mayor stake). Fallback local si quality_score viejo."""
+    if _pick_recommended_leg is not None:
+        return _pick_recommended_leg(alerta)
+    casas = list(alerta.get("casas") or [])
+    if not casas:
+        return None
+
+    def _key(c: dict) -> tuple[float, float]:
+        try:
+            stake = float(c.get("stake") or 0)
+        except (TypeError, ValueError):
+            stake = 0.0
+        try:
+            cuota = float(c.get("cuota") or 0)
+        except (TypeError, ValueError):
+            cuota = 0.0
+        return (stake, cuota)
+
+    best = dict(sorted(casas, key=_key, reverse=True)[0])
+    best["_rank"] = 1
+    return best
 
 TIPO_ARBITRAJE = "arbitraje"
 TIPO_CONSERVADORA = "conservadora"
@@ -251,8 +280,12 @@ def should_send(alerta: dict, tipo: str | None = None) -> tuple[bool, str, str]:
     Decide si enviar.
 
     Returns: (ok, tipo_final, motivo)
-    Arb ejecutable → siempre (si cabe en riesgo).
-    Conservadora/combinada: cuotas diarias + avanzar al target.
+
+    - Freno real: DAILY_RISK_CAP (ganancia NUNCA corta el envío).
+    - Meta (DAILY_PROFIT_TARGET) = piso, no techo.
+    - Arb ejecutable → siempre si cabe en riesgo.
+    - Tras meta mínima: conservadora/combinada se degradan a formato arb
+      (menos spam de esos tipos; la oportunidad sigue avisándose).
     """
     enrich_alerta_quality(alerta)
     tipo_raw = tipo or classify_alerta(alerta)
@@ -264,7 +297,9 @@ def should_send(alerta: dict, tipo: str | None = None) -> tuple[bool, str, str]:
         risk = _alerta_risk(alerta)
         profit = _alerta_profit(alerta)
         risk_cap = get_daily_risk_cap()
+        meta_ok = st.profit_estimated >= st.profit_target > 0
 
+        # Único freno duro: riesgo diario.
         if risk_cap > 0 and st.risk_used + risk > risk_cap + 1e-6:
             return (
                 False,
@@ -273,20 +308,17 @@ def should_send(alerta: dict, tipo: str | None = None) -> tuple[bool, str, str]:
             )
 
         tipo_final = tipo_raw
+        motivo_extra = "ok_arbitraje"
 
-        # Cuotas: si se llenó el cupo de conservadora/combo, degradar a arb (sigue aviso).
         if tipo_final == TIPO_CONSERVADORA:
             max_c = get_max_conservative_per_day()
             if max_c <= 0 or st.count_conservadora >= max_c:
                 tipo_final = TIPO_ARBITRAJE
                 motivo_extra = "cupo_conservadora→arb"
-            elif st.profit_estimated >= st.profit_target and tipo_raw != TIPO_ARBITRAJE:
-                # Target cumplido: solo arbs (prioridad). Conservadora no aporta spam.
-                return (
-                    False,
-                    tipo_raw,
-                    "target_diario_cumplido (solo se aceptan arbs)",
-                )
+            elif meta_ok:
+                # Meta mínima ya cumplida → menos conservadoras; sigue como arb.
+                tipo_final = TIPO_ARBITRAJE
+                motivo_extra = "meta_min_ok→arb (sigue buscando)"
             else:
                 motivo_extra = "ok_conservadora"
         elif tipo_final == TIPO_COMBINADA:
@@ -294,28 +326,29 @@ def should_send(alerta: dict, tipo: str | None = None) -> tuple[bool, str, str]:
             if max_k <= 0 or st.count_combinada >= max_k:
                 tipo_final = TIPO_ARBITRAJE
                 motivo_extra = "cupo_combo→arb"
-            elif st.profit_estimated >= st.profit_target:
-                return (
-                    False,
-                    tipo_raw,
-                    "target_diario_cumplido (solo se aceptan arbs)",
-                )
+            elif meta_ok:
+                tipo_final = TIPO_ARBITRAJE
+                motivo_extra = "meta_min_ok→arb (sigue buscando)"
             else:
                 motivo_extra = "ok_combinada"
         else:
-            motivo_extra = "ok_arbitraje_prioridad"
+            motivo_extra = (
+                "ok_arbitraje_post_meta" if meta_ok else "ok_arbitraje_prioridad"
+            )
 
-        # Arb siempre se envía si pasó riesgo.
         logger.info(
             "DailyPlan decision=ENVIAR tipo=%s→%s profit+%.0f risk+%.0f "
-            "progress=%.0f/%.0f (%.0f%%) counts=a%d/c%d/k%d | %s",
+            "meta_min=%.0f progreso=%.0f (%.0f%%) risk_used=%.0f/%.0f "
+            "counts=a%d/c%d/k%d | %s",
             tipo_raw,
             tipo_final,
             profit,
             risk,
-            st.profit_estimated,
             st.profit_target,
+            st.profit_estimated,
             st.progress_pct(),
+            st.risk_used,
+            risk_cap,
             st.count_arbitraje,
             st.count_conservadora,
             st.count_combinada,
@@ -390,25 +423,39 @@ def apply_daily_plan(alerta: dict) -> tuple[bool, str, str]:
 
 
 def progress_telegram_lines(alerta: dict | None = None) -> list[str]:
-    """Líneas cortas de progreso para el mensaje (antes de record_sent)."""
+    """
+    Progreso vs meta MÍNIMA (no techo).
+    Deja claro que se sigue buscando si hay oportunidades y queda riesgo.
+    """
     st = get_daily_state()
     dp = (alerta or {}).get("daily_plan") if alerta else {}
     target = float((dp or {}).get("target") or st.profit_target)
     est = float((dp or {}).get("profit_estimated") or st.profit_estimated)
     this_p = float((dp or {}).get("this_profit") or 0)
+    risk_used = float((dp or {}).get("risk_used") or st.risk_used)
+    risk_cap = float((dp or {}).get("risk_cap") or st.risk_cap)
     after = est + this_p
-    pct = min(100.0, 100.0 * after / target) if target > 0 else 100.0
-    faltan = max(0.0, target - after)
+    pct = (100.0 * after / target) if target > 0 else 0.0
+    meta_ok = after >= target > 0
 
     def _cop(n: float) -> str:
         return f"${n:,.0f}".replace(",", ".")
 
     lines = [
-        f"Meta día: ~{_cop(after)} / {_cop(target)} ({pct:.0f}%)",
-        f"Faltan ~{_cop(faltan)} para el target",
+        f"Meta mínima: {_cop(target)}",
+        f"Progreso: ~{_cop(after)} ({pct:.0f}% de la meta mín.)",
     ]
     if this_p > 0:
-        lines.append(f"Esta alerta aporta ~{_cop(this_p)} al objetivo")
+        lines.append(f"Esta alerta aporta ~{_cop(this_p)}")
+    if meta_ok:
+        lines.append("Meta mínima cumplida — se sigue buscando más si hay buenas opps")
+    else:
+        faltan = max(0.0, target - after)
+        lines.append(f"Faltan ~{_cop(faltan)} para la meta mínima")
+    if risk_cap > 0:
+        lines.append(f"Riesgo usado: ~{_cop(risk_used)} / {_cop(risk_cap)} (freno real)")
+    else:
+        lines.append("Riesgo: sin tope diario configurado")
     return lines
 
 

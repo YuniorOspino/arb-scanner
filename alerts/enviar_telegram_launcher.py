@@ -23,16 +23,26 @@ from alerts.daily_plan import (
     TIPO_ARBITRAJE,
     TIPO_COMBINADA,
     TIPO_CONSERVADORA,
+    pick_recommended_leg,
     progress_telegram_lines,
 )
-from alerts.quality_score import (
-    enrich_alerta_quality,
-    other_legs,
-    pick_recommended_leg,
-    why_good_bullets,
-)
+from alerts.quality_score import enrich_alerta_quality, why_good_bullets
+
+try:
+    from alerts.quality_score import other_legs as _other_legs
+except ImportError:  # deploy parcial: no tumbar import de main
+    _other_legs = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
+
+
+def other_legs(alerta: dict, primary: dict | None) -> list[dict]:
+    if _other_legs is not None:
+        return _other_legs(alerta, primary)
+    casas = list(alerta.get("casas") or [])
+    if not primary or len(casas) <= 1:
+        return casas[1:] if primary and casas else casas
+    return casas[1:]
 
 
 def _search_label(event_name: str) -> str:
