@@ -16,6 +16,58 @@ def implied_probability(odds: float) -> float:
     return 1.0 / odds
 
 
+def round_stake_cop(amount: float) -> float:
+    """
+    Redondea un stake a múltiplos prácticos para apostar en COP.
+
+    - < 20_000      → múltiplos de 500
+    - 20_000–100_000 → múltiplos de 1_000
+    - > 100_000     → múltiplos de 5_000
+
+    Si el redondeo aplastaría un stake positivo a 0 (p. ej. total_stake pequeño),
+    sube al mínimo de un escalón para no eliminar la pierna.
+    """
+    try:
+        value = float(amount)
+    except (TypeError, ValueError):
+        return 0.0
+    if value <= 0:
+        return 0.0
+
+    if value < 20_000:
+        step = 500.0
+    elif value <= 100_000:
+        step = 1_000.0
+    else:
+        step = 5_000.0
+
+    rounded = round(value / step) * step
+    if rounded <= 0:
+        rounded = step
+    return float(rounded)
+
+
+def _round_stakes_cop_proportional(
+    exact_stakes: list[float],
+    total: float,
+) -> list[float]:
+    """
+    Redondea cada stake en COP y corrige el residual en la pierna más grande
+    para conservar lo más posible el total_investment / proporcionalidad.
+    """
+    if not exact_stakes:
+        return []
+
+    rounded = [round_stake_cop(s) for s in exact_stakes]
+    residual = float(total) - sum(rounded)
+    if abs(residual) < 1e-9:
+        return rounded
+
+    idx = max(range(len(exact_stakes)), key=lambda i: exact_stakes[i])
+    rounded[idx] = round_stake_cop(rounded[idx] + residual)
+    return rounded
+
+
 def calculate_dynamic_stake(profit: float) -> float:
     return 50000.0 if float(profit) >= 1.50 else 10000.0
 
@@ -269,16 +321,23 @@ def calculate_arbitrage_stakes(
         return {}
 
     stakes: dict[str, float] = {}
+    exact: list[float] = []
+    keys: list[str] = []
     for i, odd in enumerate(clean):
         key = labels[i] if labels else f"resultado_{i + 1}"
-        stake = (total_investment * (1.0 / odd)) / inv_sum
-        stakes[key] = round(stake, 2)
+        exact.append((total_investment * (1.0 / odd)) / inv_sum)
+        keys.append(key)
+
+    rounded = _round_stakes_cop_proportional(exact, total_investment)
+    for key, stake in zip(keys, rounded):
+        stakes[key] = stake
 
     profit_percent = (1.0 / inv_sum - 1.0) * 100.0 if inv_sum < 1.0 else 0.0
     logger.debug(
-        "calculate_arbitrage_stakes: inv_sum=%.4f profit=%.2f%% stakes=%s",
+        "calculate_arbitrage_stakes: inv_sum=%.4f profit=%.2f%% exact=%s stakes=%s",
         inv_sum,
         profit_percent,
+        [round(x, 2) for x in exact],
         stakes,
     )
 
@@ -495,15 +554,21 @@ def calculate_arbitrage(
         return None
 
     legs: list[tuple[str, str, float, float]] = []
-    for q in quotes:
-        stake = total_stake * implied_probability(q.odds) / inv_sum
-        legs.append((q.bookmaker, q.outcome, q.odds, round(stake, 2)))
+    exact_stakes = [
+        total_stake * implied_probability(q.odds) / inv_sum for q in quotes
+    ]
+    rounded_stakes = _round_stakes_cop_proportional(exact_stakes, total_stake)
+    for q, stake in zip(quotes, rounded_stakes):
+        legs.append((q.bookmaker, q.outcome, q.odds, stake))
+
+    # Persist the sum actually allocated after COP rounding (may differ slightly).
+    allocated = round(sum(rounded_stakes), 2)
 
     opportunity = ArbitrageOpportunity(
         event_name=quotes[0].event_name,
         market_type=market_type,
         profit_percent=round(profit_percent, 4),
-        total_stake=total_stake,
+        total_stake=allocated if allocated > 0 else total_stake,
         legs=tuple(legs),
     )
     logger.debug(
