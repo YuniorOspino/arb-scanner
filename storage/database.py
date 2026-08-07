@@ -249,6 +249,7 @@ class OpportunityStore:
         top_n: int = 25,
         ttl_seconds: int = 120,
         queue_max: int | None = None,
+        alert_max_age_seconds: float | None = None,
     ) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -259,13 +260,20 @@ class OpportunityStore:
         self.queue_max = max(1, int(queue_max if queue_max is not None else top_n))
         self.top_n = self.queue_max
         self.ttl_seconds = max(15, int(ttl_seconds))
+        # Never activate/send items older than this (aligned with Telegram age filter).
+        self.alert_max_age_seconds = float(
+            alert_max_age_seconds
+            if alert_max_age_seconds is not None
+            else min(90.0, float(self.ttl_seconds))
+        )
         self._init_db()
         self._sync_book_capitals()
         logger.info(
-            "SQLite store ready: %s (queue_max=%d ttl=%ds)",
+            "SQLite store ready: %s (queue_max=%d ttl=%ds alert_max_age=%.0fs)",
             self.db_path,
             self.queue_max,
             self.ttl_seconds,
+            self.alert_max_age_seconds,
         )
 
     def _connect(self) -> sqlite3.Connection:
@@ -497,7 +505,9 @@ class OpportunityStore:
         (newly activated or replaced by a better one). None if no send needed.
         """
         now = datetime.now(timezone.utc)
-        self.expire_stale(now=now)
+        # Use the tighter of TTL and alert max-age so we never activate items
+        # that the Telegram pipeline would immediately reject as DESCARTADA_EDAD.
+        self.expire_stale(now=now, max_age_seconds=self.alert_max_age_seconds)
         if opportunities:
             self._enqueue_candidates(opportunities, now=now)
         self._trim_queue()
@@ -519,9 +529,12 @@ class OpportunityStore:
 
     def promote_next_active(self) -> dict[str, Any] | None:
         """Activate best queued (no current active). Returns active for Telegram."""
+        now = datetime.now(timezone.utc)
+        # Purge stale queue first — otherwise discard→promote chains through old items.
+        self.expire_stale(now=now, max_age_seconds=self.alert_max_age_seconds)
         if self.get_active_execution() is not None:
             return None
-        return self._ensure_best_active(now=datetime.now(timezone.utc))
+        return self._ensure_best_active(now=now)
 
     def expire_stale(
         self,
@@ -817,9 +830,20 @@ class OpportunityStore:
             None,
         )
         # Best candidate by score that we can fund (with active capital released conceptually)
+        # Skip anything already older than alert_max_age (Telegram would reject it).
         funding = self._funding_base_including_active_release()
         best_row = None
         for row in open_rows:
+            detected = self._parse_detected(row["detected_at"])
+            age = (now - detected).total_seconds()
+            if age > self.alert_max_age_seconds:
+                logger.debug(
+                    "EM skip stale candidate id=%s age=%.1fs detected_at=%s",
+                    row["id"],
+                    age,
+                    detected.isoformat(),
+                )
+                continue
             opp = self.execution_to_opportunity(self._row_to_execution(row))
             if self._can_fund(opp, funding):
                 best_row = row
@@ -1048,10 +1072,21 @@ class OpportunityStore:
 
     @staticmethod
     def _parse_detected(raw: Any) -> datetime:
+        """
+        Parse detected_at as UTC.
+
+        Naive timestamps are assumed UTC (Railway/SQLite convention).
+        On parse failure, return epoch so age is huge and the row is expired —
+        never 'now' (that would keep corrupt rows forever).
+        """
+        text = str(raw or "").strip().replace("Z", "+00:00")
         try:
-            detected = datetime.fromisoformat(str(raw))
+            detected = datetime.fromisoformat(text)
         except ValueError:
-            return datetime.now(timezone.utc)
+            logger.warning(
+                "EM detected_at unparseable %r — treating as ancient", raw
+            )
+            return datetime(1970, 1, 1, tzinfo=timezone.utc)
         if detected.tzinfo is None:
             detected = detected.replace(tzinfo=timezone.utc)
         return detected.astimezone(timezone.utc)

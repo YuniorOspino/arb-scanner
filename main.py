@@ -105,6 +105,8 @@ def _send_active(execution: dict[str, Any], *, _depth: int = 0) -> None:
         return
 
     # No dejar active ocupado sin Telegram: liberar y promover la siguiente.
+    # promote_next_active() first expires anything past alert_max_age so we
+    # don't chain-promote a backlog of already-stale queued items.
     _store.discard_active(int(execution["id"]), reason=categoria)
     nxt = _store.promote_next_active()
     if nxt is not None:
@@ -244,6 +246,7 @@ def main() -> int:
         top_n=cfg.execution_queue_max,
         ttl_seconds=cfg.execution_ttl_seconds,
         queue_max=cfg.execution_queue_max,
+        alert_max_age_seconds=_alert_max_age_seconds,
     )
     # Limpia backlog de execution_queue (alertas viejas que se reenviarían al promover).
     _store.purge_stale_open(max_age_seconds=_alert_max_age_seconds)

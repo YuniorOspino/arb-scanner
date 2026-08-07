@@ -86,6 +86,11 @@ def alerta_from_execution(execution: dict[str, Any]) -> dict[str, Any]:
 
     detected = execution.get("detected_at")
     if hasattr(detected, "isoformat"):
+        # Always persist timezone-aware UTC string for age filter.
+        if getattr(detected, "tzinfo", None) is None:
+            from datetime import timezone as _tz
+
+            detected = detected.replace(tzinfo=_tz.utc)
         detected_at = detected.isoformat()
     else:
         detected_at = str(detected) if detected else None
