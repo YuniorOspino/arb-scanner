@@ -16,8 +16,11 @@ from alerts.formatter import (
     _display_book,
     _event_link,
     _market_label,
+    _search_label,
+    _search_label_corto,
     _selection_label,
 )
+from alerts.quality_score import enrich_alerta_quality, why_good_bullets
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +57,9 @@ def alerta_from_execution(execution: dict[str, Any]) -> dict[str, Any]:
     event_name = str(execution.get("event_name") or "")
     market_raw = str(execution.get("market_type") or "")
     market = _market_label(market_raw) if market_raw else ""
+    deporte = str(execution.get("deporte") or execution.get("sport") or "Fútbol").strip() or "Fútbol"
+    buscar = _search_label(event_name)
+    buscar_corto = _search_label_corto(event_name)
     casas = []
     for leg in execution.get("legs") or []:
         book = str(leg.get("bookmaker") or "")
@@ -69,12 +75,13 @@ def alerta_from_execution(execution: dict[str, Any]) -> dict[str, Any]:
         leg_market = (
             _market_label(leg_market_raw) if leg_market_raw else market or "Mercado"
         )
+        seleccion = _selection_label(
+            outcome, event_name, market_type=leg_market_raw
+        )
         casas.append(
             {
                 "nombre": _display_book(book),
-                "seleccion": _selection_label(
-                    outcome, event_name, market_type=leg_market_raw
-                ),
+                "seleccion": seleccion,
                 "stake": float(leg.get("stake") or 0),
                 "cuota": float(leg.get("odds") or 0),
                 "link": _event_link(book, event_name),
@@ -83,6 +90,10 @@ def alerta_from_execution(execution: dict[str, Any]) -> dict[str, Any]:
                 "outcome": outcome,
                 "mercado": leg_market,
                 "market_type": leg_market_raw,
+                "deporte": deporte,
+                "partido": event_name,
+                "buscar": buscar,
+                "buscar_corto": buscar_corto,
             }
         )
 
@@ -100,15 +111,20 @@ def alerta_from_execution(execution: dict[str, Any]) -> dict[str, Any]:
     return {
         "ejecucion": int(execution["id"]),
         "partido": event_name,
+        "deporte": deporte,
+        "buscar": buscar,
+        "buscar_corto": buscar_corto,
         "roi": float(execution.get("profit_percent") or 0),
         "beneficio_esperado": float(execution.get("expected_profit") or 0),
         "mercado": market,
+        "market_type": market_raw,
         "score": float(execution.get("score") or 0),
         "casas": casas,
         "detected_at": detected_at,
         # extras útiles (no rompen launcher)
         "total_stake": float(execution.get("total_stake") or 0),
         "status": execution.get("status"),
+        "tipo": "arbitraje",
     }
 
 
@@ -145,24 +161,48 @@ def _fmt_cuota(value: object) -> str:
 _CIRCLED = ("1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟")
 
 
-def generar_texto_resumen(alerta: dict) -> str:
+def generar_texto_proyeccion(alerta: dict) -> str:
+    """
+    Formato diferenciado: proyección / alta calidad estadística aparente.
+    Pensado para lectura rápida en celular.
+    """
+    enrich_alerta_quality(alerta)
     ejecucion = alerta.get("ejecucion", "")
     roi = _fmt_roi(alerta.get("roi"))
     beneficio = _fmt_money_cop(alerta.get("beneficio_esperado"))
+    score = alerta.get("quality_score")
+    try:
+        score_txt = f"{float(score):.0f}"
+    except (TypeError, ValueError):
+        score_txt = "—"
+    deporte = alerta.get("deporte") or "Fútbol"
+    partido = alerta.get("partido") or ""
+    buscar = alerta.get("buscar") or _search_label(str(partido))
+    mercado = alerta.get("mercado") or ""
 
     lineas = [
-        f"⚡ ARBITRAJE #{ejecucion}",
-        f"ROI: {roi}% | Beneficio aprox: {beneficio}",
+        f"💎 PROYECCIÓN ALTA #{ejecucion}",
+        "━━━━━━━━━━━━━━━━",
+        f"Score {score_txt}/100  ·  ROI {roi}%  ·  Beneficio ~{beneficio}",
+        f"🏟 {deporte}",
     ]
-    if alerta.get("partido"):
-        lineas.append(f"🏆 {alerta['partido']}")
-    if alerta.get("mercado"):
-        lineas.append(f"📊 Mercado: {alerta['mercado']}")
-    lineas.append("")
+    if partido:
+        lineas.append(f"⚽ {partido}")
+    if buscar:
+        lineas.append(f"🔎 Buscar: {buscar}")
+    if mercado:
+        lineas.append(f"📊 Mercado: {mercado}")
 
+    lineas.append("")
+    lineas.append("📌 Por qué es buena")
+    for b in why_good_bullets(alerta):
+        lineas.append(f"• {b}")
+
+    lineas.append("")
+    lineas.append("✅ Cómo ejecutar (orden = mayor stake primero)")
     casas = alerta.get("casas") or []
     casas_ordenadas = sorted(
-        casas, key=lambda c: c.get("volatilidad", 0), reverse=True
+        casas, key=lambda c: float(c.get("stake") or 0), reverse=True
     )
     for i, c in enumerate(casas_ordenadas, start=1):
         mark = _CIRCLED[i - 1] if i <= len(_CIRCLED) else f"{i}."
@@ -170,13 +210,70 @@ def generar_texto_resumen(alerta: dict) -> str:
         seleccion = c.get("seleccion") or ""
         cuota = _fmt_cuota(c.get("cuota"))
         stake = _fmt_money_cop(c.get("stake"))
+        leg_mercado = c.get("mercado") or mercado
         lineas.append(f"{mark} {nombre}")
-        lineas.append(f"   → Apostar {seleccion}")
-        lineas.append(f"   → Cuota: {cuota}")
-        lineas.append(f"   → Stake: {stake}")
+        if leg_mercado:
+            lineas.append(f"   Mercado: {leg_mercado}")
+        lineas.append(f"   Selección: {seleccion}")
+        lineas.append(f"   Stake: {stake}  |  Cuota: {cuota}")
+
+    lineas.append("")
+    lineas.append("⏱ Pasos rápidos")
+    lineas.append("1) Abrí el launcher (botón abajo)")
+    lineas.append("2) Casa #1: copiá stake → pegá → confirmá")
+    lineas.append("3) Casa #2: igual, sin demora")
+    lineas.append("4) No cambies selección ni mercado")
+    lineas.append("")
+    lineas.append("👇 Ejecutar ahora:")
+    return "\n".join(lineas).rstrip() + "\n"
+
+
+def generar_texto_resumen(alerta: dict) -> str:
+    # Branch: proyección alta usa formato propio.
+    if alerta.get("es_proyeccion_alta") or alerta.get("tipo") == "proyeccion":
+        return generar_texto_proyeccion(alerta)
+
+    ejecucion = alerta.get("ejecucion", "")
+    roi = _fmt_roi(alerta.get("roi"))
+    beneficio = _fmt_money_cop(alerta.get("beneficio_esperado"))
+    deporte = alerta.get("deporte") or "Fútbol"
+    partido = alerta.get("partido") or ""
+    buscar = alerta.get("buscar") or _search_label(str(partido))
+    mercado = alerta.get("mercado") or ""
+
+    lineas = [
+        f"⚡ ARBITRAJE #{ejecucion}",
+        f"ROI: {roi}% | Beneficio aprox: {beneficio}",
+        f"🏟 Deporte: {deporte}",
+    ]
+    if partido:
+        lineas.append(f"⚽ Partido: {partido}")
+    if buscar:
+        lineas.append(f"🔎 Buscar: {buscar}")
+    if mercado:
+        lineas.append(f"📊 Mercado: {mercado}")
+    lineas.append("")
+
+    casas = alerta.get("casas") or []
+    casas_ordenadas = sorted(
+        casas, key=lambda c: float(c.get("stake") or 0), reverse=True
+    )
+    for i, c in enumerate(casas_ordenadas, start=1):
+        mark = _CIRCLED[i - 1] if i <= len(_CIRCLED) else f"{i}."
+        nombre = c.get("nombre") or "Casa"
+        seleccion = c.get("seleccion") or ""
+        cuota = _fmt_cuota(c.get("cuota"))
+        stake = _fmt_money_cop(c.get("stake"))
+        leg_mercado = c.get("mercado") or mercado
+        lineas.append(f"{mark} {nombre}")
+        lineas.append(f"   🔎 Buscar: {c.get('buscar') or buscar}")
+        if leg_mercado:
+            lineas.append(f"   📊 Mercado: {leg_mercado}")
+        lineas.append(f"   ✅ Apostar: {seleccion}")
+        lineas.append(f"   💰 Stake: {stake}  |  Cuota: {cuota}")
         lineas.append("")
 
-    lineas.append("👇 Un tap abre todas las casas listas:")
+    lineas.append("👇 Un tap abre búsqueda del partido en cada casa:")
     return "\n".join(lineas).rstrip() + "\n"
 
 
@@ -184,21 +281,25 @@ def enviar_alerta_con_launcher(bot_token: str, chat_id: str, alerta: dict) -> di
     """
     bot_token / chat_id desde variables de entorno — no hardcodear.
     """
+    enrich_alerta_quality(alerta)
     base = resolve_base_url()
     ejecucion_id = alerta.get("ejecucion")
     url_launcher = f"{base}/alerta/{ejecucion_id}"
 
     texto = generar_texto_resumen(alerta)
+    es_proy = bool(alerta.get("es_proyeccion_alta"))
+    btn = (
+        "💎 Abrir ejecución (proyección)"
+        if es_proy
+        else "🚀 Abrir búsqueda del partido"
+    )
 
     payload = {
         "chat_id": chat_id,
         "text": texto,
-        "parse_mode": "Markdown",
         "disable_web_page_preview": True,
         "reply_markup": {
-            "inline_keyboard": [
-                [{"text": "🚀 Abrir todas las casas", "url": url_launcher}]
-            ]
+            "inline_keyboard": [[{"text": btn, "url": url_launcher}]]
         },
     }
 
@@ -215,8 +316,10 @@ def enviar_alerta_con_launcher(bot_token: str, chat_id: str, alerta: dict) -> di
         )
         resp.raise_for_status()
     logger.info(
-        "Telegram launcher sent ejecucion=%s url=%s",
+        "Telegram launcher sent ejecucion=%s tipo=%s score=%s url=%s",
         ejecucion_id,
+        alerta.get("tipo"),
+        alerta.get("quality_score"),
         url_launcher,
     )
     return resp.json()
