@@ -15,24 +15,24 @@ logger = logging.getLogger(__name__)
 _SEP = "━━━━━━━━━━━━━━━━━━━━━━"
 
 _OUTCOME_LABELS = {
-    "home": "Local (1)",
-    "1": "Local (1)",
-    "local": "Local (1)",
-    "draw": "Empate (X)",
-    "x": "Empate (X)",
-    "empate": "Empate (X)",
-    "away": "Visitante (2)",
-    "2": "Visitante (2)",
-    "visitante": "Visitante (2)",
-    "over": "Over (Más de)",
-    "under": "Under (Menos de)",
+    "home": "Local",
+    "1": "Local",
+    "local": "Local",
+    "draw": "Empate",
+    "x": "Empate",
+    "empate": "Empate",
+    "away": "Visitante",
+    "2": "Visitante",
+    "visitante": "Visitante",
+    "over": "Más de",
+    "under": "Menos de",
     "yes": "Sí",
     "si": "Sí",
     "sí": "Sí",
     "no": "No",
-    "1x": "1X (Local o Empate)",
-    "12": "12 (Local o Visitante)",
-    "x2": "X2 (Empate o Visitante)",
+    "1x": "Local o Empate",
+    "12": "Local o Visitante",
+    "x2": "Empate o Visitante",
 }
 
 _BOOK_DISPLAY = {
@@ -75,20 +75,114 @@ def _split_teams(evento: str) -> tuple[str, str]:
     return "equipo local", "equipo visitante"
 
 
-def _selection_label(outcome: str, event_name: str) -> str:
-    key = str(outcome).strip().lower()
+def _line_from_market(market_type: str) -> str | None:
+    """Extract line like '0.5' / '2.5' from market codes (OU_2.5, CORNERS_OU_8, …)."""
+    m = str(market_type or "").strip().upper()
+    if not m:
+        return None
+    # Prefer trailing numeric token after last underscore.
+    match = re.search(
+        r"(?:OU_HT2_|OU_HT_|AOU_|OU_|CORNERS_OU_|CARDS_OU_|TT_HOME_|TT_AWAY_|AH_|EH_)"
+        r"([+-]?\d+(?:[.,]\d+)?)$",
+        m,
+    )
+    if match:
+        return match.group(1).replace(",", ".")
+    # Fallback: last number in the string.
+    nums = re.findall(r"[+-]?\d+(?:[.,]\d+)?", m)
+    if nums:
+        return nums[-1].replace(",", ".")
+    return None
+
+
+def _is_totals_market(market_type: str) -> bool:
+    up = str(market_type or "").strip().upper()
+    return bool(
+        up.startswith(
+            (
+                "OU_",
+                "AOU_",
+                "OU_HT",
+                "CORNERS_OU_",
+                "CARDS_OU_",
+                "TT_HOME_",
+                "TT_AWAY_",
+            )
+        )
+        or "OU" in up
+        or "OVER" in up
+        or "UNDER" in up
+    )
+
+
+def _is_btts_market(market_type: str) -> bool:
+    return str(market_type or "").strip().upper().startswith("BTTS")
+
+
+def _selection_label(
+    outcome: str,
+    event_name: str,
+    market_type: str = "",
+) -> str:
+    """
+    Etiqueta corta estilo casas CO: 'Más de 2.5', 'Empate', nombre de equipo, 'Sí'/'No'.
+    """
+    raw = str(outcome or "").strip()
+    key = raw.lower()
     local, away = _split_teams(event_name)
+    line = _line_from_market(market_type)
+    market = str(market_type or "").strip()
+
+    # 1X2 / DNB / AH sides → team name or Empate
     if key in {"home", "1", "local"}:
-        return f"Local (1) — {local}"
+        return local or "Local"
     if key in {"away", "2", "visitante"}:
-        return f"Visitante (2) — {away}"
+        return away or "Visitante"
     if key in {"draw", "x", "empate"}:
-        return "Empate (X)"
+        return "Empate"
+
+    # BTTS
+    if key in {"yes", "si", "sí"} or (_is_btts_market(market) and key in {"y", "true"}):
+        return "Sí"
+    if key in {"no"} or (_is_btts_market(market) and key in {"n", "false"}):
+        return "No"
+
+    # Over / Under → Más de X.X / Menos de X.X
+    if key in {"over", "o", "mas", "más"} or key.startswith("over"):
+        return f"Más de {line}" if line else "Más de"
+    if key in {"under", "u", "menos"} or key.startswith("under"):
+        return f"Menos de {line}" if line else "Menos de"
+
+    # If outcome already looks like Colombian book text, keep it.
+    low = key
+    if "más de" in low or "mas de" in low or "menos de" in low:
+        return raw
+    if low in {"sí", "si", "no"}:
+        return "Sí" if low in {"sí", "si"} else "No"
+
+    # Double chance
+    if key == "1x":
+        return "Local o Empate"
+    if key == "12":
+        return "Local o Visitante"
+    if key == "x2":
+        return "Empate o Visitante"
+
+    # Totals market but odd outcome key — still try line
+    if _is_totals_market(market) and line:
+        if "over" in low or "mas" in low or "más" in low:
+            return f"Más de {line}"
+        if "under" in low or "menos" in low:
+            return f"Menos de {line}"
+
     base = _OUTCOME_LABELS.get(key)
     if base is not None:
+        if base in {"Más de", "Menos de"} and line:
+            return f"{base} {line}"
         return base
-    # Correct score / HTFT keep compact
-    return str(outcome)
+
+    # Correct score / HTFT / unknown — keep compact raw
+    return raw
 
 
 def _market_label(market_type: str) -> str:
@@ -237,7 +331,7 @@ def format_execution_ready_alert(
                 f"CASA {idx}",
                 f"Nombre: {_display_book(bookmaker)}",
                 f"Mercado: {market}",
-                f"Selección: {_selection_label(outcome, opportunity.event_name)}",
+                f"Selección: {_selection_label(outcome, opportunity.event_name, opportunity.market_type)}",
                 f"Stake: {_money(stake)}",
                 f"Cuota: {_odds(odds)}",
                 f"Link directo al partido: {_event_link(bookmaker, opportunity.event_name)}",

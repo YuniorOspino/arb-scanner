@@ -72,7 +72,9 @@ def alerta_from_execution(execution: dict[str, Any]) -> dict[str, Any]:
         casas.append(
             {
                 "nombre": _display_book(book),
-                "seleccion": _selection_label(outcome, event_name),
+                "seleccion": _selection_label(
+                    outcome, event_name, market_type=leg_market_raw
+                ),
                 "stake": float(leg.get("stake") or 0),
                 "cuota": float(leg.get("odds") or 0),
                 "link": _event_link(book, event_name),
@@ -110,15 +112,52 @@ def alerta_from_execution(execution: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _fmt_money_cop(value: object) -> str:
+    """Format amounts for Telegram: $85.000 or $15.27 when fractional."""
+    try:
+        n = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return str(value or "0")
+    if abs(n - round(n)) < 1e-9:
+        return f"${int(round(n)):,}".replace(",", ".")
+    # Keep up to 2 decimals for expected profit, Colombian-ish separators.
+    whole, frac = f"{n:.2f}".split(".")
+    whole_fmt = f"{int(whole):,}".replace(",", ".")
+    return f"${whole_fmt},{frac}"
+
+
+def _fmt_roi(value: object) -> str:
+    try:
+        return f"{float(value):.2f}"  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return str(value or "0")
+
+
+def _fmt_cuota(value: object) -> str:
+    try:
+        n = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return str(value or "")
+    text = f"{n:.2f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+_CIRCLED = ("1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟")
+
+
 def generar_texto_resumen(alerta: dict) -> str:
+    ejecucion = alerta.get("ejecucion", "")
+    roi = _fmt_roi(alerta.get("roi"))
+    beneficio = _fmt_money_cop(alerta.get("beneficio_esperado"))
+
     lineas = [
-        f"⚡ ARBITRAJE — Ejecución {alerta.get('ejecucion')}",
-        f"ROI: {alerta.get('roi')}% | Beneficio: {alerta.get('beneficio_esperado')}",
+        f"⚡ ARBITRAJE #{ejecucion}",
+        f"ROI: {roi}% | Beneficio aprox: {beneficio}",
     ]
+    if alerta.get("partido"):
+        lineas.append(f"🏆 {alerta['partido']}")
     if alerta.get("mercado"):
         lineas.append(f"📊 Mercado: {alerta['mercado']}")
-    if alerta.get("partido"):
-        lineas.append(f"🏟 {alerta['partido']}")
     lineas.append("")
 
     casas = alerta.get("casas") or []
@@ -126,14 +165,19 @@ def generar_texto_resumen(alerta: dict) -> str:
         casas, key=lambda c: c.get("volatilidad", 0), reverse=True
     )
     for i, c in enumerate(casas_ordenadas, start=1):
-        lineas.append(
-            f"{i}️⃣ {c.get('nombre')} — {c.get('seleccion')} "
-            f"— stake `{c.get('stake')}` — cuota {c.get('cuota')}"
-        )
+        mark = _CIRCLED[i - 1] if i <= len(_CIRCLED) else f"{i}."
+        nombre = c.get("nombre") or "Casa"
+        seleccion = c.get("seleccion") or ""
+        cuota = _fmt_cuota(c.get("cuota"))
+        stake = _fmt_money_cop(c.get("stake"))
+        lineas.append(f"{mark} {nombre}")
+        lineas.append(f"   → Apostar {seleccion}")
+        lineas.append(f"   → Cuota: {cuota}")
+        lineas.append(f"   → Stake: {stake}")
+        lineas.append("")
 
-    lineas.append("")
     lineas.append("👇 Un tap abre todas las casas listas:")
-    return "\n".join(lineas)
+    return "\n".join(lineas).rstrip() + "\n"
 
 
 def enviar_alerta_con_launcher(bot_token: str, chat_id: str, alerta: dict) -> dict:
