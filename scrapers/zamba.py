@@ -117,7 +117,7 @@ def scrape_zamba() -> list[dict[str, Any]]:
         return rows
 
     if rows:
-        logger.info("Zamba scrape returned %d market-rows", len(rows))
+        logger.debug("Zamba scrape returned %d market-rows", len(rows))
     else:
         logger.warning("Zamba scrape produced no parseable events")
     return rows

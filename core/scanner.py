@@ -40,15 +40,16 @@ class ArbScanner:
         quotes: list[OddsQuote] = []
         for scraper in self.scrapers:
             name = scraper.bookmaker_name
-            logger.info("Scraping %s ...", name)
+            logger.debug("Scraping %s ...", name)
             batch = self._fetch_odds_with_timeout(scraper, name)
             if batch is None:
                 continue
             if not batch:
                 logger.warning("Skipping %s: empty quotes (no fresh data)", name)
                 continue
-            logger.info("Got %d quotes from %s", len(batch), name)
+            logger.debug("Got %d quotes from %s", len(batch), name)
             quotes.extend(batch)
+        logger.info("Quotes recopiladas: %d de %d casas", len(quotes), len(self.scrapers))
         return quotes
 
     def _fetch_odds_with_timeout(
@@ -108,14 +109,14 @@ class ArbScanner:
         newly_saved: list[ArbitrageOpportunity] = []
         for opp in opportunities:
             if is_virtual_or_esport_event(opp.event_name):
-                logger.info(
+                logger.debug(
                     "Skipping virtual/eSport opportunity: %s", opp.event_name
                 )
                 continue
             is_new = self.store.save_if_new(opp)
             if is_new:
                 newly_saved.append(opp)
-                logger.info("New opportunity persisted: %s", opp.event_name)
+                logger.debug("New opportunity persisted: %s", opp.event_name)
                 # Telegram de oportunidades: solo vía main._send_active → pipeline launcher.
                 # No llamar self.alerter.send_opportunity (formato antiguo desactivado).
                 if self.alerter:

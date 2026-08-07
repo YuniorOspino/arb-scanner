@@ -27,6 +27,9 @@ EXECUTION_QUEUE_MAX = int(os.getenv("EXECUTION_QUEUE_MAX", "25"))
 EXECUTION_TOP_N = int(os.getenv("EXECUTION_TOP_N", str(EXECUTION_QUEUE_MAX)))
 # Max age for Telegram alerts (odds go stale fast). Also used to purge open queue.
 ALERT_MAX_AGE_SECONDS = float(os.getenv("ALERT_MAX_AGE_SECONDS", "90"))
+# Risk limits (0 = disabled). Override via Railway env without code changes.
+MAX_EXPOSURE_DIARIA = float(os.getenv("MAX_EXPOSURE_DIARIA", "5000"))
+MAX_EXPOSURE_SIMULTANEA = float(os.getenv("MAX_EXPOSURE_SIMULTANEA", "500"))
 
 _DEFAULT_BOOKS = (
     "betplay",
@@ -98,6 +101,8 @@ class Config:
     execution_ttl_seconds: int = EXECUTION_TTL_SECONDS
     execution_queue_max: int = EXECUTION_QUEUE_MAX
     alert_max_age_seconds: float = ALERT_MAX_AGE_SECONDS
+    max_exposure_diaria: float = MAX_EXPOSURE_DIARIA
+    max_exposure_simultanea: float = MAX_EXPOSURE_SIMULTANEA
 
     def book_capital_map(self) -> dict[str, float]:
         return {k: float(v) for k, v in self.book_capitals}
@@ -137,6 +142,10 @@ def get_config() -> Config:
     alert_max_age = float(
         os.getenv("ALERT_MAX_AGE_SECONDS", str(ALERT_MAX_AGE_SECONDS))
     )
+    max_exp_day = float(os.getenv("MAX_EXPOSURE_DIARIA", str(MAX_EXPOSURE_DIARIA)))
+    max_exp_sim = float(
+        os.getenv("MAX_EXPOSURE_SIMULTANEA", str(MAX_EXPOSURE_SIMULTANEA))
+    )
     capitals = _load_book_capitals()
 
     return Config(
@@ -152,6 +161,8 @@ def get_config() -> Config:
         execution_ttl_seconds=max(15, ttl),
         execution_queue_max=max(1, queue_max),
         alert_max_age_seconds=max(15.0, alert_max_age),
+        max_exposure_diaria=max(0.0, max_exp_day),
+        max_exposure_simultanea=max(0.0, max_exp_sim),
     )
 
 
@@ -170,5 +181,8 @@ def setup_logging(level: str | None = None) -> None:
     if numeric > logging.DEBUG:
         logging.getLogger("urllib3").setLevel(logging.WARNING)
         logging.getLogger("aiohttp").setLevel(logging.WARNING)
+        # uvicorn access logs are a major Railway rate-limit source
+        logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+        logging.getLogger("uvicorn.error").setLevel(logging.INFO)
 
     logging.getLogger(__name__).debug("Logging initialized at %s", resolved)

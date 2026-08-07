@@ -16,7 +16,11 @@ from fastapi import FastAPI
 from alerts.endpoint_launcher import router as launcher_router
 from alerts.telegram import TelegramAlerter, poll_execution_callbacks
 from alerts.telegram import prepare_opportunity_for_alert
-from alerts.telegram_bot import enviar_ejecucion_por_pipeline
+from alerts.telegram_bot import (
+    configure_pipeline,
+    enviar_ejecucion_por_pipeline,
+    flush_discard_summary,
+)
 from config import get_config, setup_logging
 from core.scanner import ArbScanner
 from scrapers import build_scrapers
@@ -38,6 +42,7 @@ _PIPELINE_DISCARD_RELEASE = frozenset(
         "DESCARTADA_VIRTUAL",
         "DESCARTADA_BAJO_ROI",
         "DESCARTADA_ROI_INVALIDO",
+        "DESCARTADA_LIMITE_EXPOSICION",
         "SOSPECHOSA_ERROR_CUOTA",
     }
 )
@@ -81,13 +86,20 @@ def _send_active(execution: dict[str, Any], *, _depth: int = 0) -> None:
         return
 
     categoria = enviar_ejecucion_por_pipeline(execution)
-    logger.info(
+    logger.debug(
         "EM→pipeline id=%s event=%s score=%s categoria=%s",
         execution["id"],
         execution["event_name"],
         execution.get("score"),
         categoria,
     )
+    if categoria == "VALIDA":
+        logger.info(
+            "EM→pipeline VALIDA id=%s event=%s score=%s",
+            execution["id"],
+            execution["event_name"],
+            execution.get("score"),
+        )
 
     if categoria not in _PIPELINE_DISCARD_RELEASE:
         return
@@ -106,6 +118,7 @@ def run_scan_cycle() -> None:
 
     opportunities = _scanner.run_once()
     verified = []
+    cancelled_pre_em = 0
     if opportunities:
         logger.info("Ciclo con %d oportunidad(es)", len(opportunities))
         quote_cache: dict = {}
@@ -118,14 +131,16 @@ def run_scan_cycle() -> None:
                 quote_cache=quote_cache,
             )
             if ready is None:
-                logger.warning(
-                    "Oportunidad cancelada pre-EM (cuota/ROI): %s",
-                    opp.event_name,
-                )
+                cancelled_pre_em += 1
                 continue
             verified.append(ready)
+        if cancelled_pre_em:
+            logger.info(
+                "%d oportunidades canceladas pre-EM (cuota/ROI) en este ciclo",
+                cancelled_pre_em,
+            )
     else:
-        logger.info("Sin oportunidades nuevas; EM reordena/expira cola existente.")
+        logger.debug("Sin oportunidades nuevas; EM reordena/expira cola existente.")
 
     # Expira cola abierta más vieja que el umbral de alerta (además del TTL EM).
     _store.expire_stale(max_age_seconds=_alert_max_age_seconds)
@@ -133,16 +148,18 @@ def run_scan_cycle() -> None:
     if to_send is None:
         active = _store.get_active_execution()
         if active is None:
-            logger.info("EM: sin oportunidad activa")
+            logger.debug("EM: sin oportunidad activa")
         else:
-            logger.info(
+            logger.debug(
                 "EM: activa sin cambios id=%s event=%s",
                 active["id"],
                 active["event_name"],
             )
+        flush_discard_summary()
         return
 
     _send_active(to_send)
+    flush_discard_summary()
 
 
 def _poll_callbacks_once() -> None:
@@ -189,7 +206,7 @@ def _start_fastapi_server() -> None:
     port = int(os.getenv("PORT", "8000"))
     host = os.getenv("HOST", "0.0.0.0")
     logger.info("FastAPI launcher listening on %s:%s", host, port)
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    uvicorn.run(app, host=host, port=port, log_level="warning")
 
 
 def main() -> int:
@@ -203,13 +220,15 @@ def main() -> int:
     logger.info("arb-scanner starting")
     logger.info(
         "Config: interval=%ss min_profit=%.2f%% stake=%.2f queue_max=%d ttl=%ds "
-        "alert_max_age=%.0fs books=%s",
+        "alert_max_age=%.0fs exp_day=%.0f exp_sim=%.0f books=%s",
         cfg.scan_interval_seconds,
         cfg.min_profit_percent,
         cfg.max_stake_total,
         cfg.execution_queue_max,
         cfg.execution_ttl_seconds,
         _alert_max_age_seconds,
+        cfg.max_exposure_diaria,
+        cfg.max_exposure_simultanea,
         ", ".join(cfg.active_bookmakers),
     )
     logger.debug("Database path: %s", cfg.database_path)
@@ -228,6 +247,11 @@ def main() -> int:
     )
     # Limpia backlog de execution_queue (alertas viejas que se reenviarían al promover).
     _store.purge_stale_open(max_age_seconds=_alert_max_age_seconds)
+    configure_pipeline(
+        _store,
+        max_exposure_diaria=cfg.max_exposure_diaria,
+        max_exposure_simultanea=cfg.max_exposure_simultanea,
+    )
     alerter = _build_alerter()
     if alerter is not None:
         alerter.scrapers = scrapers
@@ -258,7 +282,7 @@ def main() -> int:
         if _shutdown:
             break
 
-        logger.info(
+        logger.debug(
             "Sleeping %s seconds (poll EM callbacks / expiry)", sleep_seconds
         )
         for _ in range(sleep_seconds):

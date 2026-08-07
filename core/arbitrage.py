@@ -506,7 +506,7 @@ def calculate_arbitrage(
         total_stake=total_stake,
         legs=tuple(legs),
     )
-    logger.info(
+    logger.debug(
         "Arbitrage found: %s | %.2f%% profit",
         opportunity.event_name,
         opportunity.profit_percent,

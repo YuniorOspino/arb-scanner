@@ -157,11 +157,11 @@ def _event_link(bookmaker: str, event_name: str) -> str:
     if key == "rushbet":
         return f"https://www.rushbet.co/?page=sportsbook&search={query}"
     if key == "wplay":
-        # Event slug search on football section
-        return (
-            "https://apuestas.wplay.co/es/s/FOOT/F%C3%BAtbol?"
-            f"search={query}"
-        )
+        # Official search form: GET /es/search?s=...
+        # (legacy ?search= on /FOOT/Fútbol returns ERROR 404)
+        # Full "home v away" often yields empty results; home team hits reliably.
+        team = (home or away or event_name).strip()
+        return f"https://apuestas.wplay.co/es/search?s={quote_plus(team)}"
     if key == "zamba":
         return f"https://www.zamba.co/deportes?search={query}"
     if key == "codere":

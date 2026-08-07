@@ -100,6 +100,27 @@ CREATE TABLE IF NOT EXISTS execution_queue (
 
 CREATE INDEX IF NOT EXISTS idx_execution_status_score
     ON execution_queue(status, score DESC);
+
+CREATE TABLE IF NOT EXISTS alert_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    execution_id INTEGER,
+    event_name TEXT NOT NULL,
+    market_type TEXT,
+    market_label TEXT,
+    casas_json TEXT NOT NULL,
+    roi REAL NOT NULL,
+    total_stake REAL NOT NULL,
+    status TEXT NOT NULL,
+    discard_reason TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_alert_history_ts
+    ON alert_history(ts);
+
+CREATE INDEX IF NOT EXISTS idx_alert_history_status
+    ON alert_history(status);
 """
 
 
@@ -519,6 +540,7 @@ class OpportunityStore:
         if max_age_seconds is not None:
             limit = min(limit, float(max_age_seconds))
         active_cleared = False
+        expired_n = 0
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -545,13 +567,16 @@ class OpportunityStore:
                     """,
                     (STATUS_EXPIRED, int(row["id"])),
                 )
-                logger.info(
+                expired_n += 1
+                logger.debug(
                     "EM expired id=%s event=%s age=%.0fs limit=%.0fs",
                     row["id"],
                     row["event_name"],
                     age,
                     limit,
                 )
+        if expired_n:
+            logger.info("EM: %d ejecución(es) expirada(s) (limit=%.0fs)", expired_n, limit)
         return active_cleared
 
     def purge_stale_open(
@@ -927,6 +952,99 @@ class OpportunityStore:
             )
         logger.info("EM released id=%s", execution_id)
         return True
+
+    def record_alert_event(
+        self,
+        *,
+        execution_id: int | None,
+        event_name: str,
+        market_type: str,
+        market_label: str,
+        casas: list[dict[str, Any]],
+        roi: float,
+        total_stake: float,
+        status: str,
+        discard_reason: str | None = None,
+        ts: datetime | None = None,
+    ) -> None:
+        """Persist sent/discarded alert for Excel export + exposure accounting."""
+        when = (ts or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        slim_casas = []
+        for c in casas or []:
+            slim_casas.append(
+                {
+                    "nombre": c.get("nombre") or c.get("bookmaker"),
+                    "seleccion": c.get("seleccion") or c.get("outcome"),
+                    "cuota": c.get("cuota") or c.get("odds"),
+                    "stake": c.get("stake"),
+                    "mercado": c.get("mercado") or market_label,
+                }
+            )
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO alert_history (
+                    ts, execution_id, event_name, market_type, market_label,
+                    casas_json, roi, total_stake, status, discard_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    when.isoformat(),
+                    int(execution_id) if execution_id is not None else None,
+                    str(event_name or ""),
+                    str(market_type or ""),
+                    str(market_label or ""),
+                    json.dumps(slim_casas, ensure_ascii=False),
+                    float(roi or 0),
+                    float(total_stake or 0),
+                    str(status),
+                    discard_reason,
+                ),
+            )
+
+    def exposure_sent_today(self, *, now: datetime | None = None) -> float:
+        """Sum of stakes for alerts sent since 00:00 UTC today."""
+        current = now or datetime.now(timezone.utc)
+        day_start = current.astimezone(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COALESCE(SUM(total_stake), 0) AS s
+                FROM alert_history
+                WHERE status = 'sent' AND ts >= ?
+                """,
+                (day_start.isoformat(),),
+            ).fetchone()
+        return float(row["s"] if row else 0)
+
+    def exposure_simultaneous(self) -> float:
+        """Stake reserved by current active execution (unresolved)."""
+        active = self.get_active_execution()
+        if active is None:
+            return 0.0
+        return float(active.get("total_stake") or 0)
+
+    def check_exposure_limits(
+        self,
+        stake: float,
+        *,
+        max_diaria: float,
+        max_simultanea: float,
+    ) -> str | None:
+        """
+        Return discard reason if stake would breach limits; else None.
+        max_*=0 disables that limit.
+        Simultaneous = stake of the alert that would become the single active.
+        Daily = sum of stakes already sent (status=sent) since 00:00 UTC + this stake.
+        """
+        stake = float(stake or 0)
+        if max_simultanea > 0 and stake > max_simultanea:
+            return "DESCARTADA_LIMITE_EXPOSICION"
+        if max_diaria > 0 and (self.exposure_sent_today() + stake) > max_diaria:
+            return "DESCARTADA_LIMITE_EXPOSICION"
+        return None
 
     @staticmethod
     def _parse_detected(raw: Any) -> datetime:

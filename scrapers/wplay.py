@@ -86,7 +86,7 @@ def scrape_wplay() -> list[dict[str, Any]]:
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
 
-    logger.info(
+    logger.debug(
         "Wplay scrape returned %d market-rows from %d events",
         len(rows),
         len(urls),

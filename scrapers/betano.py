@@ -71,7 +71,7 @@ def scrape_betano() -> list[dict[str, Any]]:
                 seen.add(key)
                 rows.append(row)
 
-    logger.info("Betano scrape returned %d market-rows from %d events", len(rows), len(event_paths))
+    logger.debug("Betano scrape returned %d market-rows from %d events", len(rows), len(event_paths))
     return rows
 
 
