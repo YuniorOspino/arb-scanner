@@ -320,25 +320,14 @@ def send_execution_ready_telegram(
     timeout: float = 15.0,
     store: OpportunityStore | None = None,
 ) -> bool:
-    """Send EM-prepared opportunity with Ejecutado/Liberar buttons."""
-    if store is not None:
-        model = store.execution_to_opportunity(execution)
-    else:
-        model = _opportunity_from_execution(execution)
-
-    message = format_execution_ready_alert(
-        model,
-        status="ACTIVA",
-        execution_id=int(execution["id"]),
-        score=float(execution.get("score") or 0),
+    """DESACTIVADO — formato antiguo (CASA 1/2). Usar pipeline launcher."""
+    _ = (execution, bot_token, chat_id, timeout, store)
+    logger.error(
+        "DESACTIVADO: send_execution_ready_telegram (formato antiguo). "
+        "Usar main._send_active → enviar_ejecucion_por_pipeline → "
+        "enviar_alerta_con_launcher."
     )
-    return _post_telegram(
-        bot_token,
-        chat_id,
-        message,
-        timeout=timeout,
-        reply_markup=_execution_keyboard(int(execution["id"])),
-    )
+    return False
 
 
 def poll_execution_callbacks(
@@ -451,32 +440,22 @@ def send_arbitrage_alert_telegram(
     total_stake: float | None = None,
     min_profit_percent: float = 0.0,
 ) -> bool:
-    """
-    Format and send an arb alert.
-
-    If scrapers are provided, re-validates quotes, recalculates on change,
-    and cancels when ROI falls below threshold.
-    """
-    if isinstance(opportunity, dict):
-        from alerts.formatter import opportunity_from_payload
-
-        model = opportunity_from_payload(opportunity)
-    else:
-        model = opportunity
-
-    if not skip_verification and scrapers is not None:
-        model = prepare_opportunity_for_alert(
-            model,
-            scrapers,
-            total_stake=total_stake,
-            min_profit_percent=min_profit_percent,
-        )
-        if model is None:
-            logger.warning("Alerta no enviada: oportunidad cancelada pre-envio")
-            return False
-
-    message = format_arbitrage_alert(model)
-    return _post_telegram(bot_token, chat_id, message, timeout=timeout)
+    """DESACTIVADO — formato antiguo (CASA 1/2). Usar pipeline launcher."""
+    _ = (
+        opportunity,
+        bot_token,
+        chat_id,
+        timeout,
+        scrapers,
+        skip_verification,
+        total_stake,
+        min_profit_percent,
+    )
+    logger.error(
+        "DESACTIVADO: send_arbitrage_alert_telegram (formato antiguo). "
+        "Usar enviar_ejecucion_por_pipeline → enviar_alerta_con_launcher."
+    )
+    return False
 
 
 class TelegramAlerter:
@@ -515,17 +494,13 @@ class TelegramAlerter:
     def send_opportunity(
         self, opportunity: dict | ArbitrageOpportunity
     ) -> bool:
-        if not self.enabled:
-            logger.debug("Telegram disabled; opportunity not sent")
-            return False
-        return send_arbitrage_alert_telegram(
-            opportunity,
-            self.bot_token,
-            self.chat_id,
-            scrapers=self.scrapers,
-            total_stake=self.total_stake,
-            min_profit_percent=self.min_profit_percent,
+        """DESACTIVADO — no enviar formato antiguo desde el alerter."""
+        _ = opportunity
+        logger.error(
+            "DESACTIVADO: TelegramAlerter.send_opportunity (formato antiguo). "
+            "Producción solo usa el pipeline launcher vía main._send_active."
         )
+        return False
 
     def send_value_bet(self, value_bet: dict) -> bool:
         if not self.enabled:

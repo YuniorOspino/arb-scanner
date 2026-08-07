@@ -5,7 +5,6 @@ import sys
 from collections import defaultdict
 from typing import Any
 
-from alerts.telegram_bot import send_arbitrage_alert_telegram
 from alerts.value_bet_alerts import send_value_bet_alert
 from config import (
     DB_PATH,
@@ -106,10 +105,14 @@ def run_once() -> list[dict[str, Any]]:
         saved = save_arbitrage_opportunity(opp, db_path=DB_PATH)
         logger.info("Arb saved=%s event=%s profit=%s%%", saved, opp.get("evento"), metric)
 
-        sent = send_arbitrage_alert_telegram(
-            opp, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+        # DESACTIVADO — formato antiguo (CASA 1/2). Producción usa main.py → pipeline launcher.
+        # sent = send_arbitrage_alert_telegram(
+        #     opp, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+        # )
+        logger.warning(
+            "Arb telegram NO enviado (ruta antigua desactivada). "
+            "Usar python main.py / enviar_ejecucion_por_pipeline."
         )
-        logger.info("Arb telegram sent=%s", sent)
 
     return opportunities
 

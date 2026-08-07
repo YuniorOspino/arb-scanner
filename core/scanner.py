@@ -82,8 +82,14 @@ class ArbScanner:
             if is_new:
                 newly_saved.append(opp)
                 logger.info("New opportunity persisted: %s", opp.event_name)
+                # Telegram de oportunidades: solo vía main._send_active → pipeline launcher.
+                # No llamar self.alerter.send_opportunity (formato antiguo desactivado).
                 if self.alerter:
-                    self.alerter.send_opportunity(opp)
+                    logger.debug(
+                        "Alerter presente pero envío de oportunidades desactivado "
+                        "(usar pipeline launcher en main.py): %s",
+                        opp.event_name,
+                    )
             else:
                 logger.debug("Duplicate opportunity skipped: %s", opp.event_name)
 

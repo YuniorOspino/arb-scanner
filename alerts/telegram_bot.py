@@ -18,7 +18,6 @@ from alerts.enviar_telegram_launcher import (
     enviar_alerta_con_launcher,
 )
 from alerts.filtro_roi import clasificar_alerta
-from alerts.telegram import send_arbitrage_alert_telegram
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +102,6 @@ def enviar_ejecucion_por_pipeline(execution: dict[str, Any]) -> str:
 __all__ = [
     "enviar_ejecucion_por_pipeline",
     "procesar_alerta_entrante",
-    "send_arbitrage_alert_telegram",
     "alerta_from_execution",
     "enviar_alerta_con_launcher",
 ]
