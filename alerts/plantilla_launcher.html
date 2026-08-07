@@ -12,70 +12,226 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Arbitraje listo</title>
 <style>
-  body {
-    font-family: -apple-system, system-ui, sans-serif;
-    background: #111;
-    color: #eee;
-    margin: 0;
-    padding: 20px;
+  :root {
+    --bg: #0e0e10;
+    --card: #17171a;
+    --text: #f2f2f2;
+    --muted: #9a9aa3;
+    --accent: #3d8bfd;
+    --green: #2e7d32;
+    --green-press: #1b5e20;
+    --stake-bg: #26262c;
+    --sep: #3d8bfd;
   }
-  h1 { font-size: 20px; }
-  .resumen { background: #1c1c1c; padding: 14px; border-radius: 10px; margin-bottom: 16px; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    margin: 0;
+    padding: 16px;
+    line-height: 1.35;
+  }
+  h1 {
+    font-size: 20px;
+    margin: 0 0 12px;
+    font-weight: 700;
+  }
+  .resumen {
+    background: var(--card);
+    padding: 14px 16px;
+    border-radius: 12px;
+    margin-bottom: 18px;
+    border: 1px solid #2a2a30;
+  }
+  .resumen .meta {
+    color: var(--muted);
+    font-size: 14px;
+    margin-bottom: 6px;
+  }
+  .resumen .partido {
+    font-size: 16px;
+    font-weight: 600;
+  }
+
+  /* Cada casa = bloque muy separado */
   .casa {
-    background: #1c1c1c;
-    padding: 12px;
+    background: var(--card);
+    border-radius: 14px;
+    margin-bottom: 22px;
+    overflow: hidden;
+    border: 1px solid #2a2a30;
+    border-top: 5px solid var(--sep);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  }
+  .casa:nth-child(odd) { border-top-color: #3d8bfd; }
+  .casa:nth-child(even) { border-top-color: #f0a202; }
+
+  .casa-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 14px 16px 8px;
+  }
+  .casa-num {
+    font-size: 28px;
+    font-weight: 800;
+    line-height: 1;
+    color: var(--accent);
+    min-width: 1.4em;
+  }
+  .casa:nth-child(even) .casa-num { color: #f0a202; }
+  .casa-nombre {
+    font-size: 20px;
+    font-weight: 800;
+    letter-spacing: 0.01em;
+  }
+
+  /* MERCADO = lo más visible después del nombre */
+  .casa-mercado {
+    margin: 4px 16px 12px;
+    padding: 12px 14px;
+    background: #101820;
+    border: 1px solid #2b4a6e;
     border-radius: 10px;
-    margin-bottom: 10px;
+    font-size: 22px;
+    font-weight: 800;
+    line-height: 1.25;
+    color: #ffffff;
+    letter-spacing: 0.01em;
+  }
+  .casa-mercado .label {
+    display: block;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #7eb6ff;
+    margin-bottom: 4px;
+  }
+
+  .casa-detalle {
+    padding: 0 16px 14px;
+  }
+  .fila {
     display: flex;
     justify-content: space-between;
-    align-items: center;
+    gap: 12px;
+    padding: 8px 0;
+    border-top: 1px solid #2a2a30;
+  }
+  .fila .k {
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .fila .v {
+    font-size: 17px;
+    font-weight: 700;
+    text-align: right;
+  }
+  .fila.seleccion .v {
+    color: #d7e7ff;
+  }
+  .fila.cuota .v {
+    font-variant-numeric: tabular-nums;
+    color: #ffd27a;
+    font-size: 20px;
+  }
+
+  .stake-wrap {
+    padding: 0 16px 16px;
   }
   .stake {
-    font-family: monospace;
-    font-size: 18px;
-    background: #2a2a2a;
-    padding: 6px 10px;
-    border-radius: 6px;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 20px;
+    font-weight: 700;
+    background: var(--stake-bg);
+    padding: 10px 14px;
+    border-radius: 8px;
+    cursor: pointer;
+    user-select: all;
+    border: 1px dashed #4a4a55;
   }
-  button {
+  .stake:active { background: #32323a; }
+  .copiado {
+    color: #66bb6a;
+    font-size: 13px;
+    margin-top: 6px;
+    display: none;
+    font-weight: 600;
+  }
+
+  button.abrir {
     width: 100%;
     padding: 16px;
     font-size: 18px;
     font-weight: bold;
     border: none;
-    border-radius: 10px;
-    background: #2e7d32;
+    border-radius: 12px;
+    background: var(--green);
     color: white;
-    margin-top: 10px;
+    margin-top: 6px;
+    margin-bottom: 24px;
   }
-  button:active { background: #1b5e20; }
-  .copiado { color: #66bb6a; font-size: 13px; margin-top: 4px; display: none; }
+  button.abrir:active { background: var(--green-press); }
 </style>
 </head>
 <body>
 
 <h1>⚡ Ejecución {{EJECUCION}}</h1>
 <div class="resumen">
-  ROI: {{ROI}}% · Beneficio: {{BENEFICIO}}<br>
-  🏟 {{PARTIDO}}
+  <div class="meta">ROI: {{ROI}}% · Beneficio: {{BENEFICIO}}</div>
+  <div class="partido">🏟 {{PARTIDO}}</div>
 </div>
 
 <div id="casas"><!-- se llena con JS a partir de CASAS_JSON --></div>
 
-<button onclick="abrirTodas()">🚀 Abrir todas las casas</button>
+<button class="abrir" onclick="abrirTodas()">🚀 Abrir todas las casas</button>
 
 <script>
   const CASAS = {{CASAS_JSON}};
 
+  function esc(s) {
+    return String(s ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
   const cont = document.getElementById('casas');
   CASAS.forEach((c, i) => {
+    const mercado = c.mercado || c.market || c.market_type || "Mercado no indicado";
     const div = document.createElement('div');
     div.className = 'casa';
     div.innerHTML = `
-      <div>
-        <strong>${i + 1}️⃣ ${c.nombre}</strong><br>
-        <small>${c.seleccion} · cuota ${c.cuota}</small><br>
-        <span class="stake" onclick="copiarStake('${c.stake}', this)">${c.stake} 📋</span>
+      <div class="casa-head">
+        <div class="casa-num">${i + 1}</div>
+        <div class="casa-nombre">${esc(c.nombre)}</div>
+      </div>
+      <div class="casa-mercado">
+        <span class="label">Mercado</span>
+        ${esc(mercado)}
+      </div>
+      <div class="casa-detalle">
+        <div class="fila seleccion">
+          <span class="k">Selección</span>
+          <span class="v">${esc(c.seleccion)}</span>
+        </div>
+        <div class="fila cuota">
+          <span class="k">Cuota</span>
+          <span class="v">${esc(c.cuota)}</span>
+        </div>
+      </div>
+      <div class="stake-wrap">
+        <span class="k" style="display:block;color:var(--muted);font-size:12px;font-weight:700;margin-bottom:6px;letter-spacing:.04em;">STAKE (toca para copiar)</span>
+        <span class="stake" onclick="copiarStake('${esc(c.stake)}', this)">${esc(c.stake)} 📋</span>
         <div class="copiado">¡Copiado!</div>
       </div>
     `;
@@ -83,14 +239,16 @@
   });
 
   function copiarStake(valor, el) {
-    navigator.clipboard.writeText(valor);
+    navigator.clipboard.writeText(String(valor));
     const aviso = el.parentElement.querySelector('.copiado');
     aviso.style.display = 'block';
     setTimeout(() => aviso.style.display = 'none', 1200);
   }
 
   function abrirTodas() {
-    CASAS.forEach(c => window.open(c.link, '_blank'));
+    CASAS.forEach(c => {
+      if (c.link) window.open(c.link, '_blank');
+    });
   }
 </script>
 

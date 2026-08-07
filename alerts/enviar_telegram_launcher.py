@@ -12,7 +12,12 @@ from typing import Any
 
 import requests
 
-from alerts.formatter import _display_book, _event_link, _selection_label
+from alerts.formatter import (
+    _display_book,
+    _event_link,
+    _market_label,
+    _selection_label,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +52,23 @@ def alerta_from_execution(execution: dict[str, Any]) -> dict[str, Any]:
       legs[]          → casas[] (nombre, seleccion, stake, cuota, link, volatilidad)
     """
     event_name = str(execution.get("event_name") or "")
-    market = str(execution.get("market_type") or "")
+    market_raw = str(execution.get("market_type") or "")
+    market = _market_label(market_raw) if market_raw else ""
     casas = []
     for leg in execution.get("legs") or []:
         book = str(leg.get("bookmaker") or "")
         outcome = str(leg.get("outcome") or "")
+        # Prefer per-leg market when present (cross-market arbs); else alert-level.
+        leg_market_raw = str(
+            leg.get("mercado")
+            or leg.get("market")
+            or leg.get("market_type")
+            or market_raw
+            or ""
+        )
+        leg_market = (
+            _market_label(leg_market_raw) if leg_market_raw else market or "Mercado"
+        )
         casas.append(
             {
                 "nombre": _display_book(book),
@@ -62,7 +79,8 @@ def alerta_from_execution(execution: dict[str, Any]) -> dict[str, Any]:
                 "volatilidad": 0,
                 "bookmaker": book,
                 "outcome": outcome,
-                "mercado": market,
+                "mercado": leg_market,
+                "market_type": leg_market_raw,
             }
         )
 
