@@ -144,27 +144,64 @@
   .stake-wrap {
     padding: 0 16px 16px;
   }
-  .stake {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 20px;
+  .stake-hint {
+    display: block;
+    color: var(--muted);
+    font-size: 12px;
     font-weight: 700;
+    margin-bottom: 6px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .stake {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-height: 52px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text);
     background: var(--stake-bg);
-    padding: 10px 14px;
-    border-radius: 8px;
+    padding: 14px 16px;
+    border-radius: 10px;
     cursor: pointer;
-    user-select: all;
+    user-select: none;
+    -webkit-appearance: none;
+    appearance: none;
+    -webkit-tap-highlight-color: transparent;
     border: 1px dashed #4a4a55;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
   }
   .stake:active { background: #32323a; }
+  .stake.copied {
+    background: #1a2e1c;
+    border-color: #66bb6a;
+    border-style: solid;
+    color: #a5d6a7;
+  }
+  .stake .stake-val {
+    font-variant-numeric: tabular-nums;
+  }
+  .stake .stake-ico {
+    font-size: 16px;
+    opacity: 0.7;
+    flex-shrink: 0;
+  }
   .copiado {
     color: #66bb6a;
     font-size: 13px;
-    margin-top: 6px;
-    display: none;
+    margin-top: 8px;
+    min-height: 1.2em;
+    opacity: 0;
     font-weight: 600;
+    transition: opacity 0.15s ease;
+    pointer-events: none;
+  }
+  .copiado.visible {
+    opacity: 1;
   }
 
   button.abrir {
@@ -265,19 +302,62 @@
         </div>
       </div>
       <div class="stake-wrap">
-        <span class="k" style="display:block;color:var(--muted);font-size:12px;font-weight:700;margin-bottom:6px;letter-spacing:.04em;">STAKE (toca para copiar)</span>
-        <span class="stake" onclick="copiarStake('${esc(c.stake)}', this)">${esc(c.stake)} 📋</span>
-        <div class="copiado">¡Copiado!</div>
+        <span class="stake-hint">Stake · toca para copiar</span>
+        <button type="button" class="stake" data-stake="${esc(c.stake)}" aria-label="Copiar stake ${esc(c.stake)}">
+          <span class="stake-val">${esc(c.stake)}</span>
+          <span class="stake-ico" aria-hidden="true">📋</span>
+        </button>
+        <div class="copiado" aria-live="polite">Stake copiado</div>
       </div>
     `;
     cont.appendChild(div);
   });
 
+  cont.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('.stake');
+    if (!btn || !cont.contains(btn)) return;
+    copiarStake(btn.dataset.stake || '', btn);
+  });
+
+  function mostrarStakeCopiado(btn) {
+    const wrap = btn.closest('.stake-wrap');
+    const aviso = wrap && wrap.querySelector('.copiado');
+    btn.classList.add('copied');
+    if (aviso) aviso.classList.add('visible');
+    clearTimeout(btn._copyTimer);
+    btn._copyTimer = setTimeout(() => {
+      btn.classList.remove('copied');
+      if (aviso) aviso.classList.remove('visible');
+    }, 1400);
+  }
+
   function copiarStake(valor, el) {
-    navigator.clipboard.writeText(String(valor));
-    const aviso = el.parentElement.querySelector('.copiado');
-    aviso.style.display = 'block';
-    setTimeout(() => aviso.style.display = 'none', 1200);
+    const texto = String(valor ?? '').trim();
+    if (!texto) return;
+
+    const ok = () => mostrarStakeCopiado(el);
+    const fail = () => {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = texto;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        ok();
+      } catch (_) {
+        /* clipboard unavailable */
+      }
+    };
+
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(texto).then(ok).catch(fail);
+    } else {
+      fail();
+    }
   }
 
   function abrirTodas() {
