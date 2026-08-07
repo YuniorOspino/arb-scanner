@@ -38,8 +38,11 @@ def generar_html(alerta: dict) -> str:
     plantilla = PLANTILLA_PATH.read_text(encoding="utf-8")
 
     casas = _normalize_casas(alerta)
+    # Mayor stake primero (misma prioridad en UI y al abrir pestañas).
     casas_ordenadas = sorted(
-        casas, key=lambda c: c.get("volatilidad", 0), reverse=True
+        casas,
+        key=lambda c: float(c.get("stake") or 0),
+        reverse=True,
     )
 
     html = plantilla

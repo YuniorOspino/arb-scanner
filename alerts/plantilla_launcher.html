@@ -1,15 +1,15 @@
 <!DOCTYPE html>
 <!--
-  Página "launcher" — se abre con UN tap desde el botón de Telegram, y ella
-  misma abre una pestaña por cada casa involucrada en el arbitraje.
+  Página "launcher" — un tap desde Telegram abre esta página;
+  desde aquí se abren las casas y se copia el stake.
 
-  No toca ninguna cuenta ni plataforma de apuestas: solo abre pestañas del
-  navegador con los links directos.
+  No toca cuentas ni plataformas: solo links + portapapeles.
 -->
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0e0e10">
 <title>Arbitraje listo</title>
 <style>
   :root {
@@ -20,207 +20,268 @@
     --accent: #3d8bfd;
     --green: #2e7d32;
     --green-press: #1b5e20;
-    --stake-bg: #26262c;
-    --sep: #3d8bfd;
+    --stake: #1e3a8a;
+    --stake-press: #1e40af;
+    --bet: #fff3bf;
+    --safe-b: env(safe-area-inset-bottom, 0px);
   }
   * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     background: var(--bg);
     color: var(--text);
     margin: 0;
-    padding: 16px;
-    line-height: 1.35;
+    padding: 12px 14px calc(28px + var(--safe-b));
+    line-height: 1.3;
+    max-width: 560px;
+    margin-inline: auto;
   }
-  h1 {
-    font-size: 20px;
-    margin: 0 0 12px;
+
+  .topbar {
+    margin-bottom: 10px;
+  }
+  .topbar h1 {
+    font-size: 15px;
+    margin: 0 0 4px;
     font-weight: 700;
+    color: var(--muted);
+    letter-spacing: 0.02em;
   }
   .resumen {
     background: var(--card);
-    padding: 14px 16px;
+    padding: 12px 14px;
     border-radius: 12px;
-    margin-bottom: 18px;
+    margin-bottom: 12px;
     border: 1px solid #2a2a30;
   }
   .resumen .meta {
     color: var(--muted);
-    font-size: 14px;
-    margin-bottom: 6px;
+    font-size: 13px;
+    margin-bottom: 4px;
   }
   .resumen .partido {
     font-size: 16px;
+    font-weight: 700;
+  }
+  .orden-hint {
+    font-size: 12px;
+    color: var(--muted);
+    margin: 0 0 10px;
     font-weight: 600;
   }
 
-  /* Cada casa = bloque muy separado */
+  button.abrir {
+    display: block;
+    width: 100%;
+    min-height: 56px;
+    padding: 16px 14px;
+    font-size: 18px;
+    font-weight: 800;
+    border: none;
+    border-radius: 14px;
+    background: var(--green);
+    color: #fff;
+    cursor: pointer;
+    -webkit-appearance: none;
+    appearance: none;
+    -webkit-tap-highlight-color: transparent;
+    margin: 0 0 14px;
+    letter-spacing: 0.01em;
+  }
+  button.abrir:active { background: var(--green-press); }
+  button.abrir.abajo {
+    margin-top: 8px;
+    margin-bottom: calc(8px + var(--safe-b));
+  }
+
   .casa {
     background: var(--card);
-    border-radius: 14px;
-    margin-bottom: 22px;
+    border-radius: 16px;
+    margin-bottom: 16px;
     overflow: hidden;
     border: 1px solid #2a2a30;
-    border-top: 5px solid var(--sep);
+    border-top: 5px solid #3d8bfd;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
   }
-  .casa:nth-child(odd) { border-top-color: #3d8bfd; }
   .casa:nth-child(even) { border-top-color: #f0a202; }
+  .casa.primero { box-shadow: 0 0 0 2px rgba(61, 139, 253, 0.35); }
 
   .casa-head {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: 10px;
-    padding: 14px 16px 8px;
+    padding: 12px 14px 6px;
   }
   .casa-num {
-    font-size: 28px;
-    font-weight: 800;
-    line-height: 1;
-    color: var(--accent);
-    min-width: 1.4em;
+    flex-shrink: 0;
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    display: grid;
+    place-items: center;
+    font-size: 18px;
+    font-weight: 900;
+    background: #1a2740;
+    color: #7eb6ff;
   }
-  .casa:nth-child(even) .casa-num { color: #f0a202; }
+  .casa:nth-child(even) .casa-num {
+    background: #2a220e;
+    color: #f0a202;
+  }
   .casa-nombre {
     font-size: 20px;
     font-weight: 800;
-    letter-spacing: 0.01em;
+    flex: 1;
+    min-width: 0;
+  }
+  .casa-badge {
+    flex-shrink: 0;
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #7eb6ff;
+    background: #132238;
+    padding: 5px 8px;
+    border-radius: 8px;
+  }
+  .casa:nth-child(even) .casa-badge {
+    color: #f0c14d;
+    background: #2a220e;
   }
 
-  /* MERCADO = lo más visible después del nombre */
-  .casa-mercado {
-    margin: 4px 16px 12px;
-    padding: 12px 14px;
+  /* Qué apostar = hero de cada card */
+  .apostar {
+    margin: 6px 14px 12px;
+    padding: 14px 14px 12px;
     background: #101820;
-    border: 1px solid #2b4a6e;
-    border-radius: 10px;
-    font-size: 22px;
-    font-weight: 800;
-    line-height: 1.25;
-    color: #ffffff;
-    letter-spacing: 0.01em;
+    border: 1px solid #3d5a80;
+    border-radius: 12px;
   }
-  .casa-mercado .label {
+  .apostar .label {
     display: block;
     font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
+    font-weight: 800;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
     color: #7eb6ff;
-    margin-bottom: 4px;
+    margin-bottom: 6px;
   }
-
-  .casa-detalle {
-    padding: 0 16px 14px;
+  .apostar .seleccion {
+    font-size: clamp(22px, 6.2vw, 28px);
+    font-weight: 900;
+    line-height: 1.15;
+    color: var(--bet);
+    letter-spacing: -0.01em;
+    word-break: break-word;
   }
-  .fila {
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 8px 0;
-    border-top: 1px solid #2a2a30;
-  }
-  .fila .k {
-    color: var(--muted);
+  .apostar .mercado {
+    margin-top: 8px;
     font-size: 13px;
     font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    color: #a8c4e8;
   }
-  .fila .v {
-    font-size: 17px;
-    font-weight: 700;
-    text-align: right;
-  }
-  .fila.seleccion .v {
-    color: #d7e7ff;
-  }
-  .fila.cuota .v {
-    font-variant-numeric: tabular-nums;
+  .apostar .cuota {
+    margin-top: 4px;
+    font-size: 15px;
+    font-weight: 800;
     color: #ffd27a;
-    font-size: 20px;
+    font-variant-numeric: tabular-nums;
   }
 
-  .stake-wrap {
-    padding: 0 16px 16px;
+  .acciones {
+    padding: 0 14px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
   }
-  .stake-hint {
-    display: block;
-    color: var(--muted);
-    font-size: 12px;
-    font-weight: 700;
-    margin-bottom: 6px;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-  }
-  .stake {
+
+  button.copiar-stake {
     display: flex;
     width: 100%;
     align-items: center;
     justify-content: space-between;
     gap: 10px;
-    min-height: 52px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 22px;
-    font-weight: 700;
-    color: var(--text);
-    background: var(--stake-bg);
+    min-height: 58px;
     padding: 14px 16px;
-    border-radius: 10px;
+    border: none;
+    border-radius: 12px;
+    background: var(--stake);
+    color: #fff;
     cursor: pointer;
-    user-select: none;
     -webkit-appearance: none;
     appearance: none;
     -webkit-tap-highlight-color: transparent;
-    border: 1px dashed #4a4a55;
-    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+    transition: background 0.15s ease;
   }
-  .stake:active { background: #32323a; }
-  .stake.copied {
-    background: #1a2e1c;
-    border-color: #66bb6a;
-    border-style: solid;
-    color: #a5d6a7;
+  button.copiar-stake:active { background: var(--stake-press); }
+  button.copiar-stake.copied {
+    background: #1b5e20;
   }
-  .stake .stake-val {
+  .copiar-stake .izq {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    min-width: 0;
+  }
+  .copiar-stake .lbl {
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    opacity: 0.85;
+  }
+  .copiar-stake .stake-val {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 24px;
+    font-weight: 800;
     font-variant-numeric: tabular-nums;
+    line-height: 1.1;
   }
-  .stake .stake-ico {
-    font-size: 16px;
-    opacity: 0.7;
+  .copiar-stake .der {
     flex-shrink: 0;
+    font-size: 14px;
+    font-weight: 800;
+    opacity: 0.95;
   }
   .copiado {
     color: #66bb6a;
     font-size: 13px;
-    margin-top: 8px;
-    min-height: 1.2em;
+    font-weight: 700;
+    min-height: 1.1em;
     opacity: 0;
-    font-weight: 600;
     transition: opacity 0.15s ease;
     pointer-events: none;
+    margin-top: -4px;
   }
-  .copiado.visible {
-    opacity: 1;
-  }
+  .copiado.visible { opacity: 1; }
 
-  button.abrir {
-    width: 100%;
-    padding: 16px;
-    font-size: 18px;
-    font-weight: bold;
-    border: none;
+  a.abrir-casa {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 48px;
+    padding: 12px;
     border-radius: 12px;
-    background: var(--green);
-    color: white;
-    margin-top: 6px;
-    margin-bottom: 24px;
+    border: 1px solid #3a3a44;
+    background: #222228;
+    color: var(--text);
+    text-decoration: none;
+    font-size: 16px;
+    font-weight: 800;
+    -webkit-tap-highlight-color: transparent;
   }
-  button.abrir:active { background: var(--green-press); }
+  a.abrir-casa:active { background: #2c2c34; }
+  a.abrir-casa.disabled {
+    opacity: 0.45;
+    pointer-events: none;
+  }
 
   #popup-aviso {
     display: none;
-    margin: 16px 0 8px;
+    margin: 0 0 12px;
     padding: 12px 14px;
     border-radius: 10px;
     background: #3b1d1d;
@@ -231,25 +292,43 @@
     font-weight: 600;
   }
   #popup-aviso.visible { display: block; }
+
+  @media (min-width: 480px) {
+    body { padding: 18px 18px 32px; }
+    .apostar .seleccion { font-size: 28px; }
+    button.copiar-stake { min-height: 62px; }
+    button.copiar-stake .stake-val { font-size: 26px; }
+  }
 </style>
 </head>
 <body>
 
-<h1>⚡ Ejecución {{EJECUCION}}</h1>
-<div class="resumen">
-  <div class="meta">ROI: {{ROI}}% · Beneficio: {{BENEFICIO}}</div>
-  <div class="partido">🏟 {{PARTIDO}}</div>
+<div class="topbar">
+  <h1>Ejecución {{EJECUCION}}</h1>
 </div>
 
-<div id="casas"><!-- se llena con JS a partir de CASAS_JSON --></div>
+<div class="resumen">
+  <div class="meta">ROI {{ROI}}% · Beneficio {{BENEFICIO}}</div>
+  <div class="partido">{{PARTIDO}}</div>
+</div>
+
+<button type="button" class="abrir" id="abrir-arriba" onclick="abrirTodas()">
+  Abrir todas las casas
+</button>
 
 <div id="popup-aviso" role="alert"></div>
 
-<button class="abrir" onclick="abrirTodas()">🚀 Abrir todas las casas</button>
+<p class="orden-hint">Orden: mayor stake primero · Copiá → abrí → confirmá</p>
+
+<div id="casas"></div>
+
+<button type="button" class="abrir abajo" id="abrir-abajo" onclick="abrirTodas()">
+  Abrir todas las casas
+</button>
 
 <script>
-  const CASAS = {{CASAS_JSON}};
-  const OPEN_DELAY_MS = 400;
+  const CASAS_RAW = {{CASAS_JSON}};
+  const OPEN_DELAY_MS = 350;
 
   function esc(s) {
     return String(s ?? "")
@@ -259,93 +338,121 @@
       .replace(/"/g, "&quot;");
   }
 
+  function stakeNum(c) {
+    const n = Number(c && c.stake);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  // 1) Mayor stake primero (misma prioridad al abrir pestañas).
+  const CASAS = [...CASAS_RAW].sort((a, b) => stakeNum(b) - stakeNum(a));
+
+  function fmtStake(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return String(v ?? "");
+    try {
+      return n.toLocaleString("es-CO", { maximumFractionDigits: 0 });
+    } catch (_) {
+      return String(Math.round(n));
+    }
+  }
+
   function mostrarAvisoPopup(msg) {
-    const el = document.getElementById('popup-aviso');
+    const el = document.getElementById("popup-aviso");
     if (!el) {
       alert(msg);
       return;
     }
     el.textContent = msg;
-    el.classList.add('visible');
+    el.classList.add("visible");
   }
 
   function ocultarAvisoPopup() {
-    const el = document.getElementById('popup-aviso');
+    const el = document.getElementById("popup-aviso");
     if (el) {
-      el.textContent = '';
-      el.classList.remove('visible');
+      el.textContent = "";
+      el.classList.remove("visible");
     }
   }
 
-  const cont = document.getElementById('casas');
+  const cont = document.getElementById("casas");
   CASAS.forEach((c, i) => {
-    const mercado = c.mercado || c.market || c.market_type || "Mercado no indicado";
-    const div = document.createElement('div');
-    div.className = 'casa';
+    const mercado = c.mercado || c.market || c.market_type || "Mercado";
+    const seleccion = c.seleccion || "—";
+    const link = c.link || "";
+    const stakeRaw = String(c.stake ?? "").trim();
+    const stakeShown = fmtStake(c.stake);
+    const cuota = c.cuota != null && c.cuota !== "" ? Number(c.cuota).toFixed(2) : "—";
+    const div = document.createElement("div");
+    div.className = "casa" + (i === 0 ? " primero" : "");
     div.innerHTML = `
       <div class="casa-head">
         <div class="casa-num">${i + 1}</div>
         <div class="casa-nombre">${esc(c.nombre)}</div>
+        ${i === 0 ? '<span class="casa-badge">Mayor stake</span>' : ""}
       </div>
-      <div class="casa-mercado">
-        <span class="label">Mercado</span>
-        ${esc(mercado)}
+      <div class="apostar">
+        <span class="label">Apostar exactamente</span>
+        <div class="seleccion">${esc(seleccion)}</div>
+        <div class="mercado">${esc(mercado)}</div>
+        <div class="cuota">Cuota ${esc(cuota)}</div>
       </div>
-      <div class="casa-detalle">
-        <div class="fila seleccion">
-          <span class="k">Selección</span>
-          <span class="v">${esc(c.seleccion)}</span>
-        </div>
-        <div class="fila cuota">
-          <span class="k">Cuota</span>
-          <span class="v">${esc(c.cuota)}</span>
-        </div>
-      </div>
-      <div class="stake-wrap">
-        <span class="stake-hint">Stake · toca para copiar</span>
-        <button type="button" class="stake" data-stake="${esc(c.stake)}" aria-label="Copiar stake ${esc(c.stake)}">
-          <span class="stake-val">${esc(c.stake)}</span>
-          <span class="stake-ico" aria-hidden="true">📋</span>
+      <div class="acciones">
+        <button type="button" class="copiar-stake" data-stake="${esc(stakeRaw)}"
+          aria-label="Copiar stake ${esc(stakeShown)}">
+          <span class="izq">
+            <span class="lbl">Copiar stake</span>
+            <span class="stake-val">${esc(stakeShown)}</span>
+          </span>
+          <span class="der">📋 Copiar</span>
         </button>
         <div class="copiado" aria-live="polite">Stake copiado</div>
+        <a class="abrir-casa${link ? "" : " disabled"}"
+           href="${link ? esc(link) : "#"}"
+           target="_blank" rel="noopener noreferrer"
+           ${link ? "" : 'aria-disabled="true"'}>
+          Abrir ${esc(c.nombre || "casa")}
+        </a>
       </div>
     `;
     cont.appendChild(div);
   });
 
-  cont.addEventListener('click', (ev) => {
-    const btn = ev.target.closest('.stake');
+  cont.addEventListener("click", (ev) => {
+    const btn = ev.target.closest(".copiar-stake");
     if (!btn || !cont.contains(btn)) return;
-    copiarStake(btn.dataset.stake || '', btn);
+    copiarStake(btn.dataset.stake || "", btn);
   });
 
   function mostrarStakeCopiado(btn) {
-    const wrap = btn.closest('.stake-wrap');
-    const aviso = wrap && wrap.querySelector('.copiado');
-    btn.classList.add('copied');
-    if (aviso) aviso.classList.add('visible');
+    const wrap = btn.closest(".acciones");
+    const aviso = wrap && wrap.querySelector(".copiado");
+    btn.classList.add("copied");
+    const der = btn.querySelector(".der");
+    if (der) der.textContent = "✓ Listo";
+    if (aviso) aviso.classList.add("visible");
     clearTimeout(btn._copyTimer);
     btn._copyTimer = setTimeout(() => {
-      btn.classList.remove('copied');
-      if (aviso) aviso.classList.remove('visible');
+      btn.classList.remove("copied");
+      if (der) der.textContent = "📋 Copiar";
+      if (aviso) aviso.classList.remove("visible");
     }, 1400);
   }
 
   function copiarStake(valor, el) {
-    const texto = String(valor ?? '').trim();
+    const texto = String(valor ?? "").trim();
     if (!texto) return;
 
     const ok = () => mostrarStakeCopiado(el);
     const fail = () => {
       try {
-        const ta = document.createElement('textarea');
+        const ta = document.createElement("textarea");
         ta.value = texto;
-        ta.setAttribute('readonly', '');
-        ta.style.position = 'fixed';
-        ta.style.left = '-9999px';
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
         document.body.appendChild(ta);
         ta.select();
-        document.execCommand('copy');
+        document.execCommand("copy");
         document.body.removeChild(ta);
         ok();
       } catch (_) {
@@ -362,36 +469,22 @@
 
   function abrirTodas() {
     ocultarAvisoPopup();
-
-    // Mayor stake primero (más urgente de colocar).
-    const ordenadas = [...CASAS].sort(
-      (a, b) => Number(b.stake || 0) - Number(a.stake || 0)
-    );
-    const conLink = ordenadas.filter(c => c && c.link);
-
+    const conLink = CASAS.filter((c) => c && c.link);
     if (!conLink.length) {
-      mostrarAvisoPopup('No hay links de casas para abrir en esta alerta.');
+      mostrarAvisoPopup("No hay links de casas para abrir en esta alerta.");
       return;
     }
 
-    let abiertas = 0;
     let bloqueadas = 0;
-
     conLink.forEach((c, i) => {
       setTimeout(() => {
-        const win = window.open(c.link, '_blank', 'noopener,noreferrer');
-        // null / closed → popup bloqueado por el navegador
-        if (!win || win.closed) {
-          bloqueadas += 1;
-        } else {
-          abiertas += 1;
-        }
-
+        const win = window.open(c.link, "_blank", "noopener,noreferrer");
+        if (!win || win.closed) bloqueadas += 1;
         if (i === conLink.length - 1 && bloqueadas > 0) {
           mostrarAvisoPopup(
-            'El navegador bloqueó ' + bloqueadas +
-            ' pestaña(s). Permite ventanas emergentes / pop-ups para este sitio ' +
-            'y pulsa de nuevo «Abrir todas las casas».'
+            "El navegador bloqueó " +
+              bloqueadas +
+              " pestaña(s). Usá «Abrir [casa]» en cada tarjeta, o permite pop-ups y volvé a intentar."
           );
         }
       }, i * OPEN_DELAY_MS);
