@@ -5,9 +5,26 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from alerts.formatter import _market_label
+from alerts.formatter import _market_label, _split_teams
 
 PLANTILLA_PATH = Path(__file__).parent / "plantilla_launcher.html"
+
+
+def _search_label(event_name: str) -> str:
+    home, away = _split_teams(event_name)
+    home = (home or "").strip()
+    away = (away or "").strip()
+    if home and away and home != "equipo local":
+        return f"{home} vs {away}"
+    return str(event_name or "").strip() or "—"
+
+
+def _search_label_corto(event_name: str) -> str:
+    home, away = _split_teams(event_name)
+    home = (home or "").strip()
+    if home and home != "equipo local":
+        return home
+    return _search_label(event_name)
 
 
 def _as_market_label(raw: str) -> str:
@@ -21,15 +38,23 @@ def _as_market_label(raw: str) -> str:
 
 
 def _normalize_casas(alerta: dict) -> list[dict]:
-    """Ensure each casa has a human-readable `mercado` (critical for speed)."""
+    """Ensure each casa has mercado + texto de búsqueda listos para el launcher."""
     fallback = _as_market_label(
         str(alerta.get("mercado") or alerta.get("market_type") or "")
     )
+    partido = str(alerta.get("partido") or "")
+    deporte = str(alerta.get("deporte") or "Fútbol")
+    buscar = str(alerta.get("buscar") or _search_label(partido))
+    buscar_corto = str(alerta.get("buscar_corto") or _search_label_corto(partido))
     out: list[dict] = []
     for casa in alerta.get("casas") or []:
         c = dict(casa)
         raw = str(c.get("mercado") or c.get("market") or c.get("market_type") or "")
         c["mercado"] = _as_market_label(raw) if raw else fallback
+        c["deporte"] = str(c.get("deporte") or deporte)
+        c["partido"] = str(c.get("partido") or partido)
+        c["buscar"] = str(c.get("buscar") or buscar)
+        c["buscar_corto"] = str(c.get("buscar_corto") or buscar_corto)
         out.append(c)
     return out
 
@@ -45,14 +70,24 @@ def generar_html(alerta: dict) -> str:
         reverse=True,
     )
 
+    partido = str(alerta.get("partido") or "")
+    deporte = str(alerta.get("deporte") or "Fútbol")
+    mercado = _as_market_label(
+        str(alerta.get("mercado") or alerta.get("market_type") or "")
+    )
+    buscar = str(alerta.get("buscar") or _search_label(partido))
+
     html = plantilla
     html = html.replace("{{EJECUCION}}", str(alerta.get("ejecucion", "")))
     html = html.replace("{{ROI}}", str(alerta.get("roi", "")))
     html = html.replace("{{BENEFICIO}}", str(alerta.get("beneficio_esperado", "")))
-    html = html.replace("{{PARTIDO}}", str(alerta.get("partido", "")))
+    html = html.replace("{{DEPORTE}}", deporte)
+    html = html.replace("{{PARTIDO}}", partido)
+    html = html.replace("{{MERCADO}}", mercado)
+    html = html.replace("{{BUSCAR}}", buscar)
+    html = html.replace("{{BUSCAR_JSON}}", json.dumps(buscar, ensure_ascii=False))
     html = html.replace(
         "{{CASAS_JSON}}", json.dumps(casas_ordenadas, ensure_ascii=False)
     )
 
     return html
-

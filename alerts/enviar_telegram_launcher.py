@@ -16,13 +16,30 @@ from alerts.formatter import (
     _display_book,
     _event_link,
     _market_label,
-    _search_label,
-    _search_label_corto,
     _selection_label,
+    _split_teams,
 )
 from alerts.quality_score import enrich_alerta_quality, why_good_bullets
 
 logger = logging.getLogger(__name__)
+
+
+def _search_label(event_name: str) -> str:
+    """Texto 'Home vs Away' para buscar en la casa (no depende de formatter privado)."""
+    home, away = _split_teams(event_name)
+    home = (home or "").strip()
+    away = (away or "").strip()
+    if home and away and home != "equipo local":
+        return f"{home} vs {away}"
+    return str(event_name or "").strip() or "—"
+
+
+def _search_label_corto(event_name: str) -> str:
+    home, away = _split_teams(event_name)
+    home = (home or "").strip()
+    if home and home != "equipo local":
+        return home
+    return _search_label(event_name)
 
 
 def resolve_base_url() -> str:
