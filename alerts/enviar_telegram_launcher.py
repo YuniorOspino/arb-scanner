@@ -66,6 +66,12 @@ def alerta_from_execution(execution: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
+    detected = execution.get("detected_at")
+    if hasattr(detected, "isoformat"):
+        detected_at = detected.isoformat()
+    else:
+        detected_at = str(detected) if detected else None
+
     return {
         "ejecucion": int(execution["id"]),
         "partido": event_name,
@@ -74,6 +80,7 @@ def alerta_from_execution(execution: dict[str, Any]) -> dict[str, Any]:
         "mercado": market,
         "score": float(execution.get("score") or 0),
         "casas": casas,
+        "detected_at": detected_at,
         # extras útiles (no rompen launcher)
         "total_stake": float(execution.get("total_stake") or 0),
         "status": execution.get("status"),

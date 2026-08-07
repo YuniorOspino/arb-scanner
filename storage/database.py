@@ -502,13 +502,22 @@ class OpportunityStore:
             return None
         return self._ensure_best_active(now=datetime.now(timezone.utc))
 
-    def expire_stale(self, *, now: datetime | None = None) -> bool:
+    def expire_stale(
+        self,
+        *,
+        now: datetime | None = None,
+        max_age_seconds: float | None = None,
+    ) -> bool:
         """
-        Expire open items past TTL. Releases capital if active expires.
+        Expire open items past TTL (or max_age_seconds if tighter).
+        Releases capital if active expires.
 
         Returns True if the active slot was cleared (caller should promote/send next).
         """
         current = now or datetime.now(timezone.utc)
+        limit = float(self.ttl_seconds)
+        if max_age_seconds is not None:
+            limit = min(limit, float(max_age_seconds))
         active_cleared = False
         with self._connect() as conn:
             rows = conn.execute(
@@ -521,7 +530,7 @@ class OpportunityStore:
             for row in rows:
                 detected = self._parse_detected(row["detected_at"])
                 age = (current - detected).total_seconds()
-                if age <= self.ttl_seconds:
+                if age <= limit:
                     continue
                 status = str(row["status"])
                 if status in _ACTIVE_STATUSES:
@@ -537,12 +546,106 @@ class OpportunityStore:
                     (STATUS_EXPIRED, int(row["id"])),
                 )
                 logger.info(
-                    "EM expired id=%s event=%s age=%.0fs",
+                    "EM expired id=%s event=%s age=%.0fs limit=%.0fs",
                     row["id"],
                     row["event_name"],
                     age,
+                    limit,
                 )
         return active_cleared
+
+    def purge_stale_open(
+        self,
+        *,
+        max_age_seconds: float,
+        now: datetime | None = None,
+    ) -> int:
+        """
+        Force-expire every open queue/active row older than max_age_seconds.
+        Used on startup to flush backlog that would otherwise re-alert.
+        Returns number of rows purged.
+        """
+        current = now or datetime.now(timezone.utc)
+        purged = 0
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM execution_queue
+                WHERE status IN (?, ?, ?)
+                """,
+                (STATUS_QUEUED, STATUS_ACTIVE, "reserved"),
+            ).fetchall()
+            for row in rows:
+                detected = self._parse_detected(row["detected_at"])
+                age = (current - detected).total_seconds()
+                if age <= max_age_seconds:
+                    continue
+                if str(row["status"]) in _ACTIVE_STATUSES:
+                    legs = json.loads(row["legs_json"])
+                    self._release_legs(conn, legs, spend=False)
+                conn.execute(
+                    """
+                    UPDATE execution_queue
+                    SET status = ?, updated_at = datetime('now')
+                    WHERE id = ?
+                    """,
+                    (STATUS_EXPIRED, int(row["id"])),
+                )
+                purged += 1
+                logger.info(
+                    "EM purge id=%s event=%s age=%.0fs (max=%.0fs)",
+                    row["id"],
+                    row["event_name"],
+                    age,
+                    max_age_seconds,
+                )
+        if purged:
+            logger.warning(
+                "EM purged %d stale open execution(s) older than %.0fs",
+                purged,
+                max_age_seconds,
+            )
+        return purged
+
+    def discard_active(self, execution_id: int, *, reason: str = "") -> bool:
+        """Drop active without spending capital (stale/ROI reject). Free slot."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM execution_queue WHERE id = ?",
+                (int(execution_id),),
+            ).fetchone()
+            if row is None:
+                return False
+            if str(row["status"]) not in _ACTIVE_STATUSES:
+                # Also allow discarding queued leftovers if needed
+                if str(row["status"]) != STATUS_QUEUED:
+                    return False
+                conn.execute(
+                    """
+                    UPDATE execution_queue
+                    SET status = ?, updated_at = datetime('now')
+                    WHERE id = ?
+                    """,
+                    (STATUS_EXPIRED, int(execution_id)),
+                )
+                logger.info(
+                    "EM discarded queued id=%s reason=%s", execution_id, reason or "-"
+                )
+                return True
+            legs = json.loads(row["legs_json"])
+            self._release_legs(conn, legs, spend=False)
+            conn.execute(
+                """
+                UPDATE execution_queue
+                SET status = ?, updated_at = datetime('now')
+                WHERE id = ?
+                """,
+                (STATUS_EXPIRED, int(execution_id)),
+            )
+        logger.info(
+            "EM discarded active id=%s reason=%s", execution_id, reason or "-"
+        )
+        return True
 
     def _enqueue_candidates(
         self,

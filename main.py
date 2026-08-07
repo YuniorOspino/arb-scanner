@@ -28,7 +28,19 @@ _shutdown = False
 _scanner: ArbScanner | None = None
 _store: OpportunityStore | None = None
 _min_profit_percent: float = 0.0
+_alert_max_age_seconds: float = 90.0
 _tg_update_offset: int = 0
+
+# Categorías del pipeline que no deben ocupar el slot active.
+_PIPELINE_DISCARD_RELEASE = frozenset(
+    {
+        "DESCARTADA_EDAD",
+        "DESCARTADA_VIRTUAL",
+        "DESCARTADA_BAJO_ROI",
+        "DESCARTADA_ROI_INVALIDO",
+        "SOSPECHOSA_ERROR_CUOTA",
+    }
+)
 
 TELEGRAM_TOKEN = (
     os.getenv("TELEGRAM_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or ""
@@ -60,8 +72,14 @@ def send_startup_message(alerter: TelegramAlerter | None) -> None:
         logger.warning("Startup Telegram message not sent (check token/chat_id)")
 
 
-def _send_active(execution: dict[str, Any]) -> None:
+def _send_active(execution: dict[str, Any], *, _depth: int = 0) -> None:
     """Intercepta ANTES de Telegram: filtro_roi + buffer → launcher."""
+    if _store is None:
+        return
+    if _depth > 15:
+        logger.error("EM→pipeline: demasiados descartes encadenados; abortando cadena")
+        return
+
     categoria = enviar_ejecucion_por_pipeline(execution)
     logger.info(
         "EM→pipeline id=%s event=%s score=%s categoria=%s",
@@ -70,6 +88,15 @@ def _send_active(execution: dict[str, Any]) -> None:
         execution.get("score"),
         categoria,
     )
+
+    if categoria not in _PIPELINE_DISCARD_RELEASE:
+        return
+
+    # No dejar active ocupado sin Telegram: liberar y promover la siguiente.
+    _store.discard_active(int(execution["id"]), reason=categoria)
+    nxt = _store.promote_next_active()
+    if nxt is not None:
+        _send_active(nxt, _depth=_depth + 1)
 
 
 def run_scan_cycle() -> None:
@@ -100,6 +127,8 @@ def run_scan_cycle() -> None:
     else:
         logger.info("Sin oportunidades nuevas; EM reordena/expira cola existente.")
 
+    # Expira cola abierta más vieja que el umbral de alerta (además del TTL EM).
+    _store.expire_stale(max_age_seconds=_alert_max_age_seconds)
     to_send = _store.process_execution_cycle(verified)
     if to_send is None:
         active = _store.get_active_execution()
@@ -121,7 +150,7 @@ def _poll_callbacks_once() -> None:
     if _store is None or not TELEGRAM_TOKEN:
         return
 
-    if _store.expire_stale():
+    if _store.expire_stale(max_age_seconds=_alert_max_age_seconds):
         nxt = _store.promote_next_active()
         if nxt is not None:
             _send_active(nxt)
@@ -164,20 +193,23 @@ def _start_fastapi_server() -> None:
 
 
 def main() -> int:
-    global _scanner, _store, _min_profit_percent
+    global _scanner, _store, _min_profit_percent, _alert_max_age_seconds
 
     setup_logging()
     cfg = get_config()
     _min_profit_percent = float(cfg.min_profit_percent)
+    _alert_max_age_seconds = float(cfg.alert_max_age_seconds)
 
     logger.info("arb-scanner starting")
     logger.info(
-        "Config: interval=%ss min_profit=%.2f%% stake=%.2f queue_max=%d ttl=%ds books=%s",
+        "Config: interval=%ss min_profit=%.2f%% stake=%.2f queue_max=%d ttl=%ds "
+        "alert_max_age=%.0fs books=%s",
         cfg.scan_interval_seconds,
         cfg.min_profit_percent,
         cfg.max_stake_total,
         cfg.execution_queue_max,
         cfg.execution_ttl_seconds,
+        _alert_max_age_seconds,
         ", ".join(cfg.active_bookmakers),
     )
     logger.debug("Database path: %s", cfg.database_path)
@@ -194,6 +226,8 @@ def main() -> int:
         ttl_seconds=cfg.execution_ttl_seconds,
         queue_max=cfg.execution_queue_max,
     )
+    # Limpia backlog de execution_queue (alertas viejas que se reenviarían al promover).
+    _store.purge_stale_open(max_age_seconds=_alert_max_age_seconds)
     alerter = _build_alerter()
     if alerter is not None:
         alerter.scrapers = scrapers

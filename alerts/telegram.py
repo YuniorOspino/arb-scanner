@@ -231,6 +231,18 @@ def _api_url(bot_token: str, method: str) -> str:
     return TELEGRAM_API_URL.format(token=bot_token, method=method)
 
 
+def _is_legacy_arb_format(message: str) -> bool:
+    """Detecta el formato CASA 1/CASA 2 sin launcher (no debe enviarse nunca)."""
+    text = message or ""
+    if "ARBITRAJE DETECTADO" in text:
+        return True
+    if "Edad de la oportunidad:" in text and "Link directo al partido:" in text:
+        return True
+    if "\nCASA 1\n" in text or text.startswith("CASA 1\n"):
+        return True
+    return False
+
+
 def _post_telegram(
     bot_token: str,
     chat_id: str,
@@ -241,6 +253,13 @@ def _post_telegram(
 ) -> bool:
     if not bot_token or not chat_id:
         logger.error("Telegram send: missing bot_token or chat_id")
+        return False
+
+    if _is_legacy_arb_format(message):
+        logger.error(
+            "BLOQUEADO: intento de envío Telegram con formato antiguo "
+            "(CASA 1/2 / ARBITRAJE DETECTADO). Solo pipeline launcher."
+        )
         return False
 
     payload: dict[str, Any] = {

@@ -25,6 +25,8 @@ EXECUTION_TTL_SECONDS = int(os.getenv("EXECUTION_TTL_SECONDS", "120"))
 EXECUTION_QUEUE_MAX = int(os.getenv("EXECUTION_QUEUE_MAX", "25"))
 # Backward-compatible alias (queue size)
 EXECUTION_TOP_N = int(os.getenv("EXECUTION_TOP_N", str(EXECUTION_QUEUE_MAX)))
+# Max age for Telegram alerts (odds go stale fast). Also used to purge open queue.
+ALERT_MAX_AGE_SECONDS = float(os.getenv("ALERT_MAX_AGE_SECONDS", "90"))
 
 _DEFAULT_BOOKS = (
     "betplay",
@@ -95,6 +97,7 @@ class Config:
     execution_top_n: int = EXECUTION_QUEUE_MAX  # max queued candidates
     execution_ttl_seconds: int = EXECUTION_TTL_SECONDS
     execution_queue_max: int = EXECUTION_QUEUE_MAX
+    alert_max_age_seconds: float = ALERT_MAX_AGE_SECONDS
 
     def book_capital_map(self) -> dict[str, float]:
         return {k: float(v) for k, v in self.book_capitals}
@@ -131,6 +134,9 @@ def get_config() -> Config:
         )
     )
     ttl = int(os.getenv("EXECUTION_TTL_SECONDS", str(EXECUTION_TTL_SECONDS)))
+    alert_max_age = float(
+        os.getenv("ALERT_MAX_AGE_SECONDS", str(ALERT_MAX_AGE_SECONDS))
+    )
     capitals = _load_book_capitals()
 
     return Config(
@@ -145,6 +151,7 @@ def get_config() -> Config:
         execution_top_n=max(1, queue_max),
         execution_ttl_seconds=max(15, ttl),
         execution_queue_max=max(1, queue_max),
+        alert_max_age_seconds=max(15.0, alert_max_age),
     )
 
 

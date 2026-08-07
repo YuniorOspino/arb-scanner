@@ -336,6 +336,10 @@ def build_event(
 ) -> dict[str, Any] | None:
     if not event_name or not market_id or not isinstance(odds, dict):
         return None
+    from scrapers.event_names import is_virtual_or_esport_event
+
+    if is_virtual_or_esport_event(event_name):
+        return None
     clean = {str(k): float(v) for k, v in odds.items() if float(v) > 1.0}
     if len(clean) < 2:
         return None
@@ -344,9 +348,13 @@ def build_event(
 
 def quotes_from_events(bookmaker: str, events: list[dict[str, Any]]):
     from core.models import OddsQuote
+    from scrapers.event_names import is_virtual_or_esport_event
 
     quotes = []
     for event in events:
+        event_name = str(event.get("event") or "")
+        if is_virtual_or_esport_event(event_name):
+            continue
         for outcome, odd in (event.get("odds") or {}).items():
             quotes.append(
                 OddsQuote(
@@ -354,7 +362,7 @@ def quotes_from_events(bookmaker: str, events: list[dict[str, Any]]):
                     outcome=str(outcome),
                     odds=float(odd),
                     market_id=str(event.get("market") or ""),
-                    event_name=str(event.get("event") or ""),
+                    event_name=event_name,
                 )
             )
     return quotes

@@ -17,7 +17,7 @@ from alerts.enviar_telegram_launcher import (
     alerta_from_execution,
     enviar_alerta_con_launcher,
 )
-from alerts.filtro_roi import clasificar_alerta
+from alerts.filtro_roi import ALERT_MAX_AGE_SECONDS, clasificar_alerta, edad_segundos
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,15 @@ TELEGRAM_CHAT_ID = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
 
 
 def _on_ganadora(alerta: dict) -> None:
+    # Re-check age after buffer window — odds may already be stale.
+    if clasificar_alerta(alerta) == "DESCARTADA_EDAD":
+        age = edad_segundos(alerta)
+        logger.info(
+            "DESCARTADA_EDAD post-buffer ejecucion=%s age=%.1fs",
+            alerta.get("ejecucion"),
+            age if age is not None else -1,
+        )
+        return
     guardar_alerta_activa(alerta)
     token = TELEGRAM_TOKEN
     chat = TELEGRAM_CHAT_ID
@@ -66,6 +75,27 @@ def procesar_alerta_entrante(alerta: dict) -> str:
     Retorna categoría del filtro (para logs).
     """
     categoria = clasificar_alerta(alerta)
+    age = edad_segundos(alerta)
+
+    if categoria == "DESCARTADA_EDAD":
+        logger.info(
+            "DESCARTADA_EDAD ejecucion=%s age=%.1fs max=%.0fs roi=%s partido=%s",
+            alerta.get("ejecucion"),
+            age if age is not None else -1,
+            ALERT_MAX_AGE_SECONDS,
+            alerta.get("roi"),
+            alerta.get("partido"),
+        )
+        return categoria
+
+    if categoria == "DESCARTADA_VIRTUAL":
+        logger.info(
+            "DESCARTADA_VIRTUAL ejecucion=%s partido=%s roi=%s",
+            alerta.get("ejecucion"),
+            alerta.get("partido"),
+            alerta.get("roi"),
+        )
+        return categoria
 
     if categoria == "SOSPECHOSA_ERROR_CUOTA":
         logger.warning(
@@ -85,9 +115,10 @@ def procesar_alerta_entrante(alerta: dict) -> str:
         return categoria
 
     logger.info(
-        "VALIDA_ENTRA_A_BUFFER ejecucion=%s roi=%s",
+        "VALIDA_ENTRA_A_BUFFER ejecucion=%s roi=%s age=%.1fs",
         alerta.get("ejecucion"),
         alerta.get("roi"),
+        age if age is not None else -1,
     )
     _buffer.agregar_sync(alerta)
     return categoria

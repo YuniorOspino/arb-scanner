@@ -12,6 +12,7 @@ from config import Config
 from core.arbitrage import find_opportunities
 from core.models import ArbitrageOpportunity, MarketOdds, OddsQuote
 from scrapers.base import BaseScraper
+from scrapers.event_names import is_virtual_or_esport_event
 from storage.database import OpportunityStore
 
 logger = logging.getLogger(__name__)
@@ -106,6 +107,11 @@ class ArbScanner:
 
         newly_saved: list[ArbitrageOpportunity] = []
         for opp in opportunities:
+            if is_virtual_or_esport_event(opp.event_name):
+                logger.info(
+                    "Skipping virtual/eSport opportunity: %s", opp.event_name
+                )
+                continue
             is_new = self.store.save_if_new(opp)
             if is_new:
                 newly_saved.append(opp)
