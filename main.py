@@ -1,4 +1,4 @@
-"""arb-scanner entrypoint: Scanner → Execution Manager (single active) → Telegram."""
+"""arb-scanner: FastAPI (launcher) + Scanner → EM → filtro/buffer → Telegram launcher."""
 
 from __future__ import annotations
 
@@ -6,15 +6,17 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
 from typing import Any
 
-from alerts.telegram import (
-    TelegramAlerter,
-    poll_execution_callbacks,
-    prepare_opportunity_for_alert,
-    send_execution_ready_telegram,
-)
+import uvicorn
+from fastapi import FastAPI
+
+from alerts.endpoint_launcher import router as launcher_router
+from alerts.telegram import TelegramAlerter, poll_execution_callbacks
+from alerts.telegram import prepare_opportunity_for_alert
+from alerts.telegram_bot import enviar_ejecucion_por_pipeline
 from config import get_config, setup_logging
 from core.scanner import ArbScanner
 from scrapers import build_scrapers
@@ -33,6 +35,10 @@ TELEGRAM_TOKEN = (
 ).strip()
 TELEGRAM_CHAT_ID = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
 
+# FastAPI principal (única instancia) — rutas del launcher
+app = FastAPI(title="arb-scanner")
+app.include_router(launcher_router)
+
 
 def _handle_signal(signum: int, _frame: object) -> None:
     global _shutdown
@@ -46,7 +52,7 @@ def send_startup_message(alerter: TelegramAlerter | None) -> None:
         return
 
     ok = alerter.send_message(
-        "arb-scanner listo. Flujo: Scanner → cola EM → 1 oportunidad activa en Telegram."
+        "arb-scanner listo. Flujo: EM → filtro ROI → buffer → launcher Telegram."
     )
     if ok:
         logger.info("Startup Telegram message sent")
@@ -55,23 +61,19 @@ def send_startup_message(alerter: TelegramAlerter | None) -> None:
 
 
 def _send_active(execution: dict[str, Any]) -> None:
-    sent = send_execution_ready_telegram(
-        execution,
-        TELEGRAM_TOKEN,
-        TELEGRAM_CHAT_ID,
-        store=_store,
-    )
+    """Intercepta ANTES de Telegram: filtro_roi + buffer → launcher."""
+    categoria = enviar_ejecucion_por_pipeline(execution)
     logger.info(
-        "EM Telegram ACTIVE sent=%s id=%s event=%s score=%s",
-        sent,
+        "EM→pipeline id=%s event=%s score=%s categoria=%s",
         execution["id"],
         execution["event_name"],
         execution.get("score"),
+        categoria,
     )
 
 
 def run_scan_cycle() -> None:
-    """Scanner → verify → EM queue/rank/expire → Telegram only if active changed."""
+    """Scanner → verify → EM → pipeline (filtro/buffer/launcher)."""
     if _scanner is None or _store is None:
         raise RuntimeError("Scanner/store not initialized")
 
@@ -119,7 +121,6 @@ def _poll_callbacks_once() -> None:
     if _store is None or not TELEGRAM_TOKEN:
         return
 
-    # Expire during idle; if active died, promote + send next
     if _store.expire_stale():
         nxt = _store.promote_next_active()
         if nxt is not None:
@@ -152,6 +153,14 @@ def _build_alerter() -> TelegramAlerter | None:
         total_stake=None,
         min_profit_percent=_min_profit_percent,
     )
+
+
+def _start_fastapi_server() -> None:
+    """Sirve el launcher en el mismo proceso (Railway PORT)."""
+    port = int(os.getenv("PORT", "8000"))
+    host = os.getenv("HOST", "0.0.0.0")
+    logger.info("FastAPI launcher listening on %s:%s", host, port)
+    uvicorn.run(app, host=host, port=port, log_level="info")
 
 
 def main() -> int:
@@ -191,6 +200,12 @@ def main() -> int:
         alerter.min_profit_percent = _min_profit_percent
         alerter.total_stake = cfg.max_stake_total
     _scanner = ArbScanner(cfg, scrapers, _store, alerter=None)
+
+    # FastAPI en hilo daemon; el loop del scanner queda en el hilo principal
+    api_thread = threading.Thread(
+        target=_start_fastapi_server, name="fastapi-launcher", daemon=True
+    )
+    api_thread.start()
 
     send_startup_message(alerter)
 
