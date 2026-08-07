@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout, as_completed
 from typing import Any
 from urllib.parse import urljoin
 
@@ -22,9 +22,12 @@ from scrapers.market_normalize import (
 logger = logging.getLogger(__name__)
 
 WPLAY_URL = "https://apuestas.wplay.co/es/s/FOOT/Fútbol"
-TIMEOUT = 25.0
+# Per-request HTTP timeout (connect + read).
+TIMEOUT = 15.0
+# Wall-clock budget for the event fan-out (partial results OK).
+SCRAPE_DEADLINE = 60.0
 MAX_EVENTS = 80
-MAX_WORKERS = 10
+MAX_WORKERS = 8
 BROWSER_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -37,10 +40,8 @@ BROWSER_HEADERS = {
 
 
 def scrape_wplay() -> list[dict[str, Any]]:
-    session = requests.Session()
-    session.headers.update(BROWSER_HEADERS)
     try:
-        response = session.get(WPLAY_URL, timeout=TIMEOUT)
+        response = requests.get(WPLAY_URL, headers=BROWSER_HEADERS, timeout=TIMEOUT)
         response.raise_for_status()
     except requests.RequestException as exc:
         logger.warning("Wplay list failed: %s", exc)
@@ -55,27 +56,40 @@ def scrape_wplay() -> list[dict[str, Any]]:
 
     rows: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        futures = {
-            pool.submit(_fetch_event, session, url): url for url in event_urls[:MAX_EVENTS]
-        }
-        for fut in as_completed(futures):
-            try:
-                batch = fut.result()
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("Wplay event failed: %s", exc)
-                continue
-            for row in batch:
-                key = (row["event"], row["market"])
-                if key in seen:
+    urls = event_urls[:MAX_EVENTS]
+    pool = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+    try:
+        # One request per worker — do NOT share requests.Session across threads.
+        futures = {pool.submit(_fetch_event, url): url for url in urls}
+        try:
+            for fut in as_completed(futures, timeout=SCRAPE_DEADLINE):
+                try:
+                    batch = fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("Wplay event failed: %s", exc)
                     continue
-                seen.add(key)
-                rows.append(row)
+                for row in batch:
+                    key = (row["event"], row["market"])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    rows.append(row)
+        except FuturesTimeout:
+            pending = sum(1 for f in futures if not f.done())
+            logger.warning(
+                "Wplay fan-out hit %.0fs deadline (%d events pending); returning partial",
+                SCRAPE_DEADLINE,
+                pending,
+            )
+            for fut in futures:
+                fut.cancel()
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
     logger.info(
         "Wplay scrape returned %d market-rows from %d events",
         len(rows),
-        min(len(event_urls), MAX_EVENTS),
+        len(urls),
     )
     return rows
 
@@ -93,8 +107,8 @@ def _event_urls(html: str) -> list[str]:
     return urls
 
 
-def _fetch_event(session: requests.Session, url: str) -> list[dict[str, Any]]:
-    response = session.get(url, timeout=TIMEOUT)
+def _fetch_event(url: str) -> list[dict[str, Any]]:
+    response = requests.get(url, headers=BROWSER_HEADERS, timeout=TIMEOUT)
     response.raise_for_status()
     return _parse_event_html(response.text)
 

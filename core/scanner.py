@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
 from alerts.telegram import TelegramAlerter
 from config import Config
@@ -13,6 +15,9 @@ from scrapers.base import BaseScraper
 from storage.database import OpportunityStore
 
 logger = logging.getLogger(__name__)
+
+# Wall-clock budget per bookmaker so one hung scraper cannot stall the cycle.
+_SCRAPER_HARD_TIMEOUT = float(os.getenv("SCRAPER_HARD_TIMEOUT_SECONDS", "90"))
 
 
 class ArbScanner:
@@ -34,17 +39,40 @@ class ArbScanner:
         quotes: list[OddsQuote] = []
         for scraper in self.scrapers:
             name = scraper.bookmaker_name
+            logger.info("Scraping %s ...", name)
+            batch = self._fetch_odds_with_timeout(scraper, name)
+            if batch is None:
+                continue
+            if not batch:
+                logger.warning("Skipping %s: empty quotes (no fresh data)", name)
+                continue
+            logger.info("Got %d quotes from %s", len(batch), name)
+            quotes.extend(batch)
+        return quotes
+
+    def _fetch_odds_with_timeout(
+        self, scraper: BaseScraper, name: str
+    ) -> list[OddsQuote] | None:
+        """Run fetch_odds under a hard timeout; never block the scan loop forever."""
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
+            future = pool.submit(scraper.fetch_odds)
             try:
-                logger.info("Scraping %s ...", name)
-                batch = scraper.fetch_odds()
-                if not batch:
-                    logger.warning("Skipping %s: empty quotes (no fresh data)", name)
-                    continue
-                logger.info("Got %d quotes from %s", len(batch), name)
-                quotes.extend(batch)
+                return future.result(timeout=_SCRAPER_HARD_TIMEOUT)
+            except FuturesTimeout:
+                logger.warning(
+                    "Scraper timed out after %.0fs: %s — skipping",
+                    _SCRAPER_HARD_TIMEOUT,
+                    name,
+                )
+                future.cancel()
+                return None
             except Exception:
                 logger.exception("Scraper failed: %s — skipping", name)
-        return quotes
+                return None
+        finally:
+            # Do not wait for a hung request thread; let it die when its HTTP timeout fires.
+            pool.shutdown(wait=False, cancel_futures=True)
 
     def group_markets(self, quotes: list[OddsQuote]) -> list[MarketOdds]:
         """Group flat quotes into markets by event + inferred market key."""
