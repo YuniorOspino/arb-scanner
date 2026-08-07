@@ -19,6 +19,9 @@ BASE_DIR = Path(__file__).resolve().parent
 # --- Non-secret defaults (override via env) ---
 TOTAL_INVESTMENT = float(os.getenv("TOTAL_INVESTMENT", "100.0"))
 MIN_MARGIN_THRESHOLD = float(os.getenv("MIN_MARGIN_THRESHOLD", "1.5"))
+# Gate post-recalc pre-envío (alerts/telegram.prepare_opportunity_for_alert).
+# Detección puede exigir MIN_MARGIN_THRESHOLD; tras releer cuotas basta este ROI.
+ALERT_POST_RECALC_MIN_ROI = float(os.getenv("ALERT_POST_RECALC_MIN_ROI", "1.2"))
 DB_PATH = os.getenv("DB_PATH", os.getenv("DATABASE_PATH", "data/arb_scanner.db"))
 # Single-active execution queue
 EXECUTION_TTL_SECONDS = int(os.getenv("EXECUTION_TTL_SECONDS", "120"))
@@ -30,6 +33,8 @@ ALERT_MAX_AGE_SECONDS = float(os.getenv("ALERT_MAX_AGE_SECONDS", "90"))
 # Risk limits (0 = disabled). Override via Railway env without code changes.
 MAX_EXPOSURE_DIARIA = float(os.getenv("MAX_EXPOSURE_DIARIA", "5000"))
 MAX_EXPOSURE_SIMULTANEA = float(os.getenv("MAX_EXPOSURE_SIMULTANEA", "500"))
+# Max new arb alerts to enqueue/send per scan cycle (best ROI first).
+MAX_ALERTS_PER_CYCLE = int(os.getenv("MAX_ALERTS_PER_CYCLE", "3"))
 
 _DEFAULT_BOOKS = (
     "betplay",
@@ -103,6 +108,7 @@ class Config:
     alert_max_age_seconds: float = ALERT_MAX_AGE_SECONDS
     max_exposure_diaria: float = MAX_EXPOSURE_DIARIA
     max_exposure_simultanea: float = MAX_EXPOSURE_SIMULTANEA
+    max_alerts_per_cycle: int = MAX_ALERTS_PER_CYCLE
 
     def book_capital_map(self) -> dict[str, float]:
         return {k: float(v) for k, v in self.book_capitals}
@@ -146,6 +152,7 @@ def get_config() -> Config:
     max_exp_sim = float(
         os.getenv("MAX_EXPOSURE_SIMULTANEA", str(MAX_EXPOSURE_SIMULTANEA))
     )
+    max_alerts = int(os.getenv("MAX_ALERTS_PER_CYCLE", str(MAX_ALERTS_PER_CYCLE)))
     capitals = _load_book_capitals()
 
     return Config(
@@ -163,6 +170,7 @@ def get_config() -> Config:
         alert_max_age_seconds=max(15.0, alert_max_age),
         max_exposure_diaria=max(0.0, max_exp_day),
         max_exposure_simultanea=max(0.0, max_exp_sim),
+        max_alerts_per_cycle=max(1, max_alerts),
     )
 
 

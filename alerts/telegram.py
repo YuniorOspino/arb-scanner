@@ -25,6 +25,31 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/{method}"
 
+# Post-recalc gate (pre-EM / pre-Telegram). Detection can stay stricter
+# (MIN_MARGIN_THRESHOLD); aquí aceptamos down to ALERT_POST_RECALC_MIN_ROI.
+_DEFAULT_POST_RECALC_MIN_ROI = 1.2
+_DEFAULT_POST_RECALC_HARD_FLOOR = 0.5
+
+
+def get_post_recalc_min_roi() -> float:
+    """ROI mínimo tras recalcular cuotas para ENVIAR. Env: ALERT_POST_RECALC_MIN_ROI."""
+    return float(
+        os.getenv("ALERT_POST_RECALC_MIN_ROI", str(_DEFAULT_POST_RECALC_MIN_ROI))
+    )
+
+
+def get_post_recalc_hard_floor() -> float:
+    """
+    Por debajo de esto se cancela siempre (sin arb útil / basura).
+    Env: ALERT_POST_RECALC_HARD_FLOOR (default 0.5).
+    """
+    return float(
+        os.getenv(
+            "ALERT_POST_RECALC_HARD_FLOOR",
+            str(_DEFAULT_POST_RECALC_HARD_FLOOR),
+        )
+    )
+
 
 def format_alert(event: dict, profit: float) -> str:
     """Backward-compatible wrapper; prefer format_arbitrage_alert(opportunity)."""
@@ -84,15 +109,25 @@ def prepare_opportunity_for_alert(
     quote_cache: dict[str, list[OddsQuote]] | None = None,
 ) -> ArbitrageOpportunity | None:
     """
-    Re-check live quotes before sending.
+    Re-check live quotes before EM / Telegram.
 
-    - If any leg is missing → cancel
-    - If odds changed → recalculate stakes/ROI with the existing arb math
-    - If ROI falls below min_profit_percent → cancel
+    Flujo:
+      1) Releer cuotas de cada pierna
+      2) Recalcular arb/ROI (siempre)
+      3) Si ROI recalc >= ALERT_POST_RECALC_MIN_ROI (default 1.2%) → enviar
+      4) Si ROI recalc < ese umbral → cancelar
+      5) Si ya no hay arb o ROI < hard floor (default 0.5%) → cancelar siempre
+
+    `min_profit_percent` se conserva por compat API (detección upstream); la
+    decisión post-recalc usa ALERT_POST_RECALC_MIN_ROI, no ese valor.
     """
+    _ = min_profit_percent  # compat API; gate usa get_post_recalc_min_roi()
     cache = quote_cache if quote_cache is not None else {}
     scrapers_by_name = {s.bookmaker_name: s for s in scrapers}
     stake_total = float(total_stake if total_stake is not None else opportunity.total_stake)
+    original_roi = float(opportunity.profit_percent)
+    post_min = get_post_recalc_min_roi()
+    hard_floor = get_post_recalc_hard_floor()
 
     fresh_quotes: list[OddsQuote] = []
     odds_changed = False
@@ -100,6 +135,13 @@ def prepare_opportunity_for_alert(
     for bookmaker, outcome, expected_odds, _stake in opportunity.legs:
         quotes = _fetch_book_quotes(bookmaker, scrapers_by_name, cache)
         if quotes is None:
+            logger.info(
+                "Post-recalc | event=%s | ROI_orig=%.3f%% | ROI_recalc=n/a | "
+                "decision=CANCELAR | motivo=scraper/cuotas no disponibles casa=%s",
+                opportunity.event_name,
+                original_roi,
+                bookmaker,
+            )
             return None
 
         current = _lookup_quote(
@@ -109,19 +151,21 @@ def prepare_opportunity_for_alert(
             market_id=opportunity.market_type,
         )
         if current is None:
-            logger.warning(
-                "Descartada: cuota ausente antes de envio | casa=%s outcome=%s event=%s",
+            logger.info(
+                "Post-recalc | event=%s | ROI_orig=%.3f%% | ROI_recalc=n/a | "
+                "decision=CANCELAR | motivo=cuota ausente casa=%s outcome=%s",
+                opportunity.event_name,
+                original_roi,
                 bookmaker,
                 outcome,
-                opportunity.event_name,
             )
             return None
 
-        if current != expected_odds:
+        if abs(float(current) - float(expected_odds)) > 1e-9:
             odds_changed = True
             logger.info(
-                "Cuota cambio antes de envio — recalculando | casa=%s outcome=%s "
-                "event=%s expected=%s current=%s",
+                "Cuota cambio antes de envio | casa=%s outcome=%s event=%s "
+                "expected=%s current=%s",
                 bookmaker,
                 outcome,
                 opportunity.event_name,
@@ -139,29 +183,67 @@ def prepare_opportunity_for_alert(
             )
         )
 
-    if not odds_changed:
-        if opportunity.profit_percent < min_profit_percent:
-            logger.warning(
-                "Alerta cancelada: ROI %.4f%% < umbral %.4f%% | %s",
-                opportunity.profit_percent,
-                min_profit_percent,
-                opportunity.event_name,
-            )
-            return None
-        return opportunity
-
+    # Siempre recalcular con umbral 0 para obtener ROI real; el gate va después.
     recalculated = calculate_arbitrage(
         fresh_quotes,
         total_stake=stake_total,
-        min_profit_percent=min_profit_percent,
+        min_profit_percent=0.0,
         market_type=opportunity.market_type,
     )
+
     if recalculated is None:
-        logger.warning(
-            "Alerta cancelada tras recalculo (sin arb o ROI bajo umbral) | %s",
+        logger.info(
+            "Post-recalc | event=%s | ROI_orig=%.3f%% | ROI_recalc=n/a (sin arb) | "
+            "odds_changed=%s | decision=CANCELAR | motivo=ya no hay arbitraje "
+            "(inv_sum>=1 o ROI<0) | umbral_envio=%.2f%% hard_floor=%.2f%%",
             opportunity.event_name,
+            original_roi,
+            odds_changed,
+            post_min,
+            hard_floor,
         )
         return None
+
+    recalc_roi = float(recalculated.profit_percent)
+
+    if recalc_roi < hard_floor:
+        logger.info(
+            "Post-recalc | event=%s | ROI_orig=%.3f%% | ROI_recalc=%.3f%% | "
+            "odds_changed=%s | decision=CANCELAR | motivo=ROI under hard_floor "
+            "(%.2f%%) | umbral_envio=%.2f%%",
+            opportunity.event_name,
+            original_roi,
+            recalc_roi,
+            odds_changed,
+            hard_floor,
+            post_min,
+        )
+        return None
+
+    if recalc_roi < post_min:
+        logger.info(
+            "Post-recalc | event=%s | ROI_orig=%.3f%% | ROI_recalc=%.3f%% | "
+            "odds_changed=%s | decision=CANCELAR | motivo=ROI under "
+            "ALERT_POST_RECALC_MIN_ROI (%.2f%%)",
+            opportunity.event_name,
+            original_roi,
+            recalc_roi,
+            odds_changed,
+            post_min,
+        )
+        return None
+
+    logger.info(
+        "Post-recalc | event=%s | ROI_orig=%.3f%% | ROI_recalc=%.3f%% | "
+        "odds_changed=%s | decision=ENVIAR | motivo=ROI_recalc>=%.2f%% "
+        "(hard_floor=%.2f%%)",
+        opportunity.event_name,
+        original_roi,
+        recalc_roi,
+        odds_changed,
+        post_min,
+        hard_floor,
+    )
 
     # Preserve original detection timestamp for age display.
     return ArbitrageOpportunity(
@@ -185,7 +267,7 @@ def verify_opportunity_odds(
     min_profit_percent: float = 0.0,
 ) -> ArbitrageOpportunity | None:
     """
-    Backward-compatible pre-send gate.
+    Backward-compatible pre-send gate (misma lógica post-recalc).
 
     Returns the (possibly recalculated) opportunity, or None to cancel.
     """

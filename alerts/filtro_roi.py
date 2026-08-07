@@ -25,8 +25,19 @@ ROI_MAX = float(os.getenv("ALERT_ROI_MAX", "30"))
 
 
 def get_roi_min() -> float:
-    """ROI mínimo para notificar (default 1.0%). Override: ALERT_ROI_MIN."""
-    return float(os.getenv("ALERT_ROI_MIN", os.getenv("MIN_MARGIN_THRESHOLD", "1.5")))
+    """
+    ROI mínimo en clasificar_alerta (post pipeline).
+
+    Alineado con el gate post-recalc para no matar lo ya aceptado a 1.2%:
+      ALERT_ROI_MIN → ALERT_POST_RECALC_MIN_ROI → 1.2
+    La detección upstream sigue usando MIN_MARGIN_THRESHOLD (p.ej. 1.5).
+    """
+    return float(
+        os.getenv(
+            "ALERT_ROI_MIN",
+            os.getenv("ALERT_POST_RECALC_MIN_ROI", "1.2"),
+        )
+    )
 
 
 def get_min_stake() -> float:
