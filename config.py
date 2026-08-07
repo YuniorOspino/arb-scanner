@@ -22,6 +22,13 @@ MIN_MARGIN_THRESHOLD = float(os.getenv("MIN_MARGIN_THRESHOLD", "1.5"))
 # Gate post-recalc pre-envío (alerts/telegram.prepare_opportunity_for_alert).
 # Detección puede exigir MIN_MARGIN_THRESHOLD; tras releer cuotas basta este ROI.
 ALERT_POST_RECALC_MIN_ROI = float(os.getenv("ALERT_POST_RECALC_MIN_ROI", "1.2"))
+
+# Plan diario de ingresos (alerts/daily_plan.py)
+DAILY_PROFIT_TARGET = float(os.getenv("DAILY_PROFIT_TARGET", "10000"))
+DAILY_RISK_CAP = float(os.getenv("DAILY_RISK_CAP", "150000"))
+MAX_CONSERVATIVE_ALERTS_PER_DAY = int(os.getenv("MAX_CONSERVATIVE_ALERTS_PER_DAY", "8"))
+MAX_COMBO_ALERTS_PER_DAY = int(os.getenv("MAX_COMBO_ALERTS_PER_DAY", "3"))
+
 DB_PATH = os.getenv("DB_PATH", os.getenv("DATABASE_PATH", "data/arb_scanner.db"))
 # Single-active execution queue
 EXECUTION_TTL_SECONDS = int(os.getenv("EXECUTION_TTL_SECONDS", "120"))

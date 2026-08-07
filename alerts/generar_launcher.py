@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from alerts.formatter import _market_label, _split_teams
+from alerts.quality_score import enrich_alerta_quality
 
 PLANTILLA_PATH = Path(__file__).parent / "plantilla_launcher.html"
 
@@ -61,6 +62,10 @@ def _normalize_casas(alerta: dict) -> list[dict]:
 
 def generar_html(alerta: dict) -> str:
     plantilla = PLANTILLA_PATH.read_text(encoding="utf-8")
+    try:
+        enrich_alerta_quality(alerta)
+    except Exception:
+        pass
 
     casas = _normalize_casas(alerta)
     # Mayor stake primero (misma prioridad en UI y al abrir pestañas).
@@ -77,8 +82,32 @@ def generar_html(alerta: dict) -> str:
     )
     buscar = str(alerta.get("buscar") or _search_label(partido))
 
+    ejecucion = alerta.get("ejecucion", "")
+    tipo = str(alerta.get("tipo_plan") or alerta.get("tipo") or "arbitraje").lower()
+    rec = alerta.get("recomendacion_resumen") or {}
+    score = alerta.get("quality_score", "—")
+    if tipo == "conservadora" or tipo == "proyeccion":
+        titulo = "Conservadora"
+        badge = f"🛡 Conservadora · viabilidad {score}/100"
+        rec_line = (
+            f"Priorizá {rec.get('casa')}: {rec.get('seleccion')} · stake {rec.get('stake')}"
+            if rec
+            else ""
+        )
+    elif tipo == "combinada":
+        titulo = "Combinada"
+        badge = f"🎯 Combinada · calidad {score}/100"
+        rec_line = "Ejecutá piernas en orden (mayor stake primero)"
+    else:
+        titulo = "Arbitraje listo"
+        badge = ""
+        rec_line = ""
+
     html = plantilla
-    html = html.replace("{{EJECUCION}}", str(alerta.get("ejecucion", "")))
+    html = html.replace("{{EJECUCION}}", str(ejecucion))
+    html = html.replace("{{TITULO}}", titulo)
+    html = html.replace("{{BADGE_PROYECCION}}", badge)
+    html = html.replace("{{REC_LINE}}", rec_line)
     html = html.replace("{{ROI}}", str(alerta.get("roi", "")))
     html = html.replace("{{BENEFICIO}}", str(alerta.get("beneficio_esperado", "")))
     html = html.replace("{{DEPORTE}}", deporte)
@@ -86,6 +115,9 @@ def generar_html(alerta: dict) -> str:
     html = html.replace("{{MERCADO}}", mercado)
     html = html.replace("{{BUSCAR}}", buscar)
     html = html.replace("{{BUSCAR_JSON}}", json.dumps(buscar, ensure_ascii=False))
+    html = html.replace(
+        "{{EJECUCION_JSON}}", json.dumps(ejecucion, ensure_ascii=False)
+    )
     html = html.replace(
         "{{CASAS_JSON}}", json.dumps(casas_ordenadas, ensure_ascii=False)
     )

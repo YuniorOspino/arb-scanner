@@ -19,7 +19,18 @@ from alerts.formatter import (
     _selection_label,
     _split_teams,
 )
-from alerts.quality_score import enrich_alerta_quality, why_good_bullets
+from alerts.daily_plan import (
+    TIPO_ARBITRAJE,
+    TIPO_COMBINADA,
+    TIPO_CONSERVADORA,
+    progress_telegram_lines,
+)
+from alerts.quality_score import (
+    enrich_alerta_quality,
+    other_legs,
+    pick_recommended_leg,
+    why_good_bullets,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -178,104 +189,26 @@ def _fmt_cuota(value: object) -> str:
 _CIRCLED = ("1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟")
 
 
-def generar_texto_proyeccion(alerta: dict) -> str:
-    """
-    Formato diferenciado: proyección / alta calidad estadística aparente.
-    Pensado para lectura rápida en celular.
-    """
-    enrich_alerta_quality(alerta)
-    ejecucion = alerta.get("ejecucion", "")
-    roi = _fmt_roi(alerta.get("roi"))
-    beneficio = _fmt_money_cop(alerta.get("beneficio_esperado"))
-    score = alerta.get("quality_score")
-    try:
-        score_txt = f"{float(score):.0f}"
-    except (TypeError, ValueError):
-        score_txt = "—"
-    deporte = alerta.get("deporte") or "Fútbol"
-    partido = alerta.get("partido") or ""
-    buscar = alerta.get("buscar") or _search_label(str(partido))
+def _append_daily_progress(lineas: list[str], alerta: dict) -> None:
+    lineas.append("")
+    lineas.append("📅 Plan diario")
+    for ln in progress_telegram_lines(alerta):
+        if ln:
+            lineas.append(ln)
+
+
+def _append_legs_block(
+    lineas: list[str],
+    alerta: dict,
+    *,
+    orden_stake: bool = True,
+) -> None:
     mercado = alerta.get("mercado") or ""
-
-    lineas = [
-        f"💎 PROYECCIÓN ALTA #{ejecucion}",
-        "━━━━━━━━━━━━━━━━",
-        f"Score {score_txt}/100  ·  ROI {roi}%  ·  Beneficio ~{beneficio}",
-        f"🏟 {deporte}",
-    ]
-    if partido:
-        lineas.append(f"⚽ {partido}")
-    if buscar:
-        lineas.append(f"🔎 Buscar: {buscar}")
-    if mercado:
-        lineas.append(f"📊 Mercado: {mercado}")
-
-    lineas.append("")
-    lineas.append("📌 Por qué es buena")
-    for b in why_good_bullets(alerta):
-        lineas.append(f"• {b}")
-
-    lineas.append("")
-    lineas.append("✅ Cómo ejecutar (orden = mayor stake primero)")
-    casas = alerta.get("casas") or []
-    casas_ordenadas = sorted(
-        casas, key=lambda c: float(c.get("stake") or 0), reverse=True
-    )
-    for i, c in enumerate(casas_ordenadas, start=1):
-        mark = _CIRCLED[i - 1] if i <= len(_CIRCLED) else f"{i}."
-        nombre = c.get("nombre") or "Casa"
-        seleccion = c.get("seleccion") or ""
-        cuota = _fmt_cuota(c.get("cuota"))
-        stake = _fmt_money_cop(c.get("stake"))
-        leg_mercado = c.get("mercado") or mercado
-        lineas.append(f"{mark} {nombre}")
-        if leg_mercado:
-            lineas.append(f"   Mercado: {leg_mercado}")
-        lineas.append(f"   Selección: {seleccion}")
-        lineas.append(f"   Stake: {stake}  |  Cuota: {cuota}")
-
-    lineas.append("")
-    lineas.append("⏱ Pasos rápidos")
-    lineas.append("1) Abrí el launcher (botón abajo)")
-    lineas.append("2) Casa #1: copiá stake → pegá → confirmá")
-    lineas.append("3) Casa #2: igual, sin demora")
-    lineas.append("4) No cambies selección ni mercado")
-    lineas.append("")
-    lineas.append("👇 Ejecutar ahora:")
-    return "\n".join(lineas).rstrip() + "\n"
-
-
-def generar_texto_resumen(alerta: dict) -> str:
-    # Branch: proyección alta usa formato propio.
-    if alerta.get("es_proyeccion_alta") or alerta.get("tipo") == "proyeccion":
-        return generar_texto_proyeccion(alerta)
-
-    ejecucion = alerta.get("ejecucion", "")
-    roi = _fmt_roi(alerta.get("roi"))
-    beneficio = _fmt_money_cop(alerta.get("beneficio_esperado"))
-    deporte = alerta.get("deporte") or "Fútbol"
-    partido = alerta.get("partido") or ""
-    buscar = alerta.get("buscar") or _search_label(str(partido))
-    mercado = alerta.get("mercado") or ""
-
-    lineas = [
-        f"⚡ ARBITRAJE #{ejecucion}",
-        f"ROI: {roi}% | Beneficio aprox: {beneficio}",
-        f"🏟 Deporte: {deporte}",
-    ]
-    if partido:
-        lineas.append(f"⚽ Partido: {partido}")
-    if buscar:
-        lineas.append(f"🔎 Buscar: {buscar}")
-    if mercado:
-        lineas.append(f"📊 Mercado: {mercado}")
-    lineas.append("")
-
-    casas = alerta.get("casas") or []
-    casas_ordenadas = sorted(
-        casas, key=lambda c: float(c.get("stake") or 0), reverse=True
-    )
-    for i, c in enumerate(casas_ordenadas, start=1):
+    buscar = alerta.get("buscar") or _search_label(str(alerta.get("partido") or ""))
+    casas = list(alerta.get("casas") or [])
+    if orden_stake:
+        casas = sorted(casas, key=lambda c: float(c.get("stake") or 0), reverse=True)
+    for i, c in enumerate(casas, start=1):
         mark = _CIRCLED[i - 1] if i <= len(_CIRCLED) else f"{i}."
         nombre = c.get("nombre") or "Casa"
         seleccion = c.get("seleccion") or ""
@@ -286,12 +219,165 @@ def generar_texto_resumen(alerta: dict) -> str:
         lineas.append(f"   🔎 Buscar: {c.get('buscar') or buscar}")
         if leg_mercado:
             lineas.append(f"   📊 Mercado: {leg_mercado}")
-        lineas.append(f"   ✅ Apostar: {seleccion}")
+        lineas.append(f"   ✅ Selección: {seleccion}")
         lineas.append(f"   💰 Stake: {stake}  |  Cuota: {cuota}")
         lineas.append("")
 
-    lineas.append("👇 Un tap abre búsqueda del partido en cada casa:")
+
+def generar_texto_arbitraje(alerta: dict) -> str:
+    enrich_alerta_quality(alerta)
+    ejecucion = alerta.get("ejecucion", "")
+    roi = _fmt_roi(alerta.get("roi"))
+    beneficio = _fmt_money_cop(alerta.get("beneficio_esperado"))
+    deporte = alerta.get("deporte") or "Fútbol"
+    partido = alerta.get("partido") or ""
+    buscar = alerta.get("buscar") or _search_label(str(partido))
+    mercado = alerta.get("mercado") or ""
+
+    lineas = [
+        f"⚡ ARBITRAJE #{ejecucion}",
+        "━━━━━━━━━━━━━━━━",
+        f"ROI {roi}%  ·  Beneficio ~{beneficio}",
+        f"🏟 {deporte}",
+    ]
+    if partido:
+        lineas.append(f"⚽ {partido}")
+    if buscar:
+        lineas.append(f"🔎 Buscar: {buscar}")
+    if mercado:
+        lineas.append(f"📊 Mercado: {mercado}")
+    lineas.append("")
+    lineas.append("📌 Por qué")
+    lineas.append("• Arbitraje ejecutable: margen bloqueado si salen ambas piernas")
+    lineas.append("• Prioridad 1 del plan diario (ingreso controlado)")
+    _append_legs_block(lineas, alerta)
+    lineas.append("⏱ Pasos")
+    lineas.append("1) Abrí launcher → casa mayor stake primero")
+    lineas.append("2) Copiá stake → pegá → confirmá")
+    lineas.append("3) Segunda casa sin demora")
+    lineas.append("4) No cambies mercado/selección")
+    _append_daily_progress(lineas, alerta)
+    lineas.append("")
+    lineas.append("👇 Ejecutar:")
     return "\n".join(lineas).rstrip() + "\n"
+
+
+def generar_texto_conservadora(alerta: dict) -> str:
+    """Apuesta conservadora de buena proyección (pierna principal)."""
+    enrich_alerta_quality(alerta)
+    ejecucion = alerta.get("ejecucion", "")
+    roi = _fmt_roi(alerta.get("roi"))
+    beneficio = _fmt_money_cop(alerta.get("beneficio_esperado"))
+    score = alerta.get("quality_score")
+    try:
+        score_txt = f"{float(score):.0f}"
+    except (TypeError, ValueError):
+        score_txt = "—"
+
+    partido = str(alerta.get("partido") or "")
+    buscar = str(alerta.get("buscar") or _search_label(partido))
+    mercado_alert = str(alerta.get("mercado") or "")
+    primary = alerta.get("recomendacion") or pick_recommended_leg(alerta)
+    rest = other_legs(alerta, primary)
+
+    lineas = [
+        f"🛡 CONSERVADORA #{ejecucion}",
+        "━━━━━━━━━━━━━━━━",
+        f"Viabilidad {score_txt}/100  ·  Edge/ROI {roi}%  ·  ~{beneficio}",
+    ]
+    if partido:
+        lineas.append(f"⚽ {partido}")
+
+    lineas.append("")
+    lineas.append("🎯 Apuesta (prioridad)")
+    if primary:
+        lineas.append(f"Casa: {primary.get('nombre') or primary.get('bookmaker')}")
+        lineas.append(f"Buscar: {primary.get('buscar') or buscar}")
+        lineas.append(f"Mercado: {primary.get('mercado') or mercado_alert}")
+        lineas.append(f"Selección: {primary.get('seleccion') or primary.get('outcome')}")
+        lineas.append(f"Stake: {_fmt_money_cop(primary.get('stake'))}")
+        lineas.append(f"Cuota: {_fmt_cuota(primary.get('cuota'))}")
+
+    lineas.append("")
+    lineas.append("📌 Por qué se recomienda")
+    for b in why_good_bullets(alerta):
+        lineas.append(f"• {b}")
+    lineas.append("• Perfil conservador: cuota moderada + mercado estable")
+
+    if rest:
+        lineas.append("")
+        lineas.append("🛡 Cobertura opcional (si querés cerrar arb)")
+        for c in rest[:2]:
+            lineas.append(
+                f"• {c.get('nombre')}: {c.get('seleccion')} · "
+                f"{_fmt_money_cop(c.get('stake'))} @ {_fmt_cuota(c.get('cuota'))}"
+            )
+
+    casa = (primary or {}).get("nombre") or "la casa"
+    lineas.append("")
+    lineas.append("⏱ Pasos")
+    lineas.append("1) Abrí launcher")
+    lineas.append(f"2) En {casa}: copiar stake → confirmar selección")
+    lineas.append("3) Solo si la cuota sigue igual o mejor")
+    _append_daily_progress(lineas, alerta)
+    lineas.append("")
+    lineas.append("👇 Ejecutar:")
+    return "\n".join(lineas).rstrip() + "\n"
+
+
+def generar_texto_combinada(alerta: dict) -> str:
+    """Plan combinado 2–3 piernas de alta calidad (pocas al día)."""
+    enrich_alerta_quality(alerta)
+    ejecucion = alerta.get("ejecucion", "")
+    roi = _fmt_roi(alerta.get("roi"))
+    beneficio = _fmt_money_cop(alerta.get("beneficio_esperado"))
+    score = alerta.get("quality_score")
+    try:
+        score_txt = f"{float(score):.0f}"
+    except (TypeError, ValueError):
+        score_txt = "—"
+    partido = str(alerta.get("partido") or "")
+    n = len(alerta.get("casas") or [])
+
+    lineas = [
+        f"🎯 COMBINADA #{ejecucion}",
+        "━━━━━━━━━━━━━━━━",
+        f"Alta calidad {score_txt}/100  ·  {n} piernas  ·  ROI {roi}%  ·  ~{beneficio}",
+    ]
+    if partido:
+        lineas.append(f"⚽ {partido}")
+    lineas.append("")
+    lineas.append("📌 Por qué (alta exigencia)")
+    for b in why_good_bullets(alerta)[:4]:
+        lineas.append(f"• {b}")
+    lineas.append("• Solo se envían pocas combinadas/día (calidad > cantidad)")
+    lineas.append("")
+    lineas.append("✅ Piernas (máx 3 — ejecutá en orden)")
+    _append_legs_block(lineas, alerta)
+    lineas.append("⏱ Pasos")
+    lineas.append("1) Abrí launcher")
+    lineas.append("2) Ejecutá pierna 1 (mayor stake)")
+    lineas.append("3) Pierna 2 (y 3 si hay) sin demora")
+    lineas.append("4) Si una cuota se movió en contra: abortá el resto")
+    _append_daily_progress(lineas, alerta)
+    lineas.append("")
+    lineas.append("👇 Ejecutar:")
+    return "\n".join(lineas).rstrip() + "\n"
+
+
+# Compat nombre anterior
+def generar_texto_proyeccion(alerta: dict) -> str:
+    return generar_texto_conservadora(alerta)
+
+
+def generar_texto_resumen(alerta: dict) -> str:
+    enrich_alerta_quality(alerta)
+    tipo = str(alerta.get("tipo_plan") or alerta.get("tipo") or TIPO_ARBITRAJE).lower()
+    if tipo == TIPO_CONSERVADORA or tipo == "proyeccion":
+        return generar_texto_conservadora(alerta)
+    if tipo == TIPO_COMBINADA:
+        return generar_texto_combinada(alerta)
+    return generar_texto_arbitraje(alerta)
 
 
 def enviar_alerta_con_launcher(bot_token: str, chat_id: str, alerta: dict) -> dict:
@@ -304,12 +390,13 @@ def enviar_alerta_con_launcher(bot_token: str, chat_id: str, alerta: dict) -> di
     url_launcher = f"{base}/alerta/{ejecucion_id}"
 
     texto = generar_texto_resumen(alerta)
-    es_proy = bool(alerta.get("es_proyeccion_alta"))
-    btn = (
-        "💎 Abrir ejecución (proyección)"
-        if es_proy
-        else "🚀 Abrir búsqueda del partido"
-    )
+    tipo = str(alerta.get("tipo_plan") or alerta.get("tipo") or TIPO_ARBITRAJE)
+    if tipo == TIPO_CONSERVADORA:
+        btn = "🛡 Abrir conservadora"
+    elif tipo == TIPO_COMBINADA:
+        btn = "🎯 Abrir combinada"
+    else:
+        btn = "⚡ Abrir arbitraje"
 
     payload = {
         "chat_id": chat_id,

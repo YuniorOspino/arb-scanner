@@ -33,6 +33,7 @@ _scanner: ArbScanner | None = None
 _store: OpportunityStore | None = None
 _min_profit_percent: float = 0.0
 _alert_max_age_seconds: float = 90.0
+_max_alerts_per_cycle: int = 3
 _tg_update_offset: int = 0
 
 # Categorías del pipeline que no deben ocupar el slot active.
@@ -43,6 +44,8 @@ _PIPELINE_DISCARD_RELEASE = frozenset(
         "DESCARTADA_BAJO_ROI",
         "DESCARTADA_ROI_INVALIDO",
         "DESCARTADA_LIMITE_EXPOSICION",
+        "DESCARTADA_MERCADO_FRAGIL",
+        "DESCARTADA_STAKE_BAJO",
         "SOSPECHOSA_ERROR_CUOTA",
     }
 )
@@ -69,7 +72,7 @@ def send_startup_message(alerter: TelegramAlerter | None) -> None:
         return
 
     ok = alerter.send_message(
-        "arb-scanner listo. Flujo: EM → filtro ROI → buffer → launcher Telegram."
+        "arb-scanner listo. Flujo: EM → filtro ROI → launcher Telegram (buffer=0)."
     )
     if ok:
         logger.info("Startup Telegram message sent")
@@ -122,9 +125,33 @@ def run_scan_cycle() -> None:
     verified = []
     cancelled_pre_em = 0
     if opportunities:
-        logger.info("Ciclo con %d oportunidad(es)", len(opportunities))
-        quote_cache: dict = {}
-        for opp in opportunities:
+        logger.info("Ciclo con %d oportunidad(es) candidata(s)", len(opportunities))
+        # Reuse quotes from this cycle — avoid a second full scrape per book.
+        # Set REVERIFY_ODDS_BEFORE_ALERT=1 to force a live re-fetch (slower, fresher).
+        if os.getenv("REVERIFY_ODDS_BEFORE_ALERT", "0").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }:
+            quote_cache: dict = {}
+        else:
+            quote_cache = dict(_scanner.last_quotes_by_book)
+        # Already sorted by ROI in scanner; re-sort after verify to be safe.
+        ranked = sorted(
+            opportunities,
+            key=lambda o: float(o.profit_percent),
+            reverse=True,
+        )
+        for opp in ranked:
+            if len(verified) >= _max_alerts_per_cycle:
+                skipped = len(ranked) - ranked.index(opp)
+                if skipped > 0:
+                    logger.info(
+                        "Tope MAX_ALERTS_PER_CYCLE=%d: omitiendo %d con ROI menor",
+                        _max_alerts_per_cycle,
+                        skipped,
+                    )
+                break
             ready = prepare_opportunity_for_alert(
                 opp,
                 _scanner.scrapers,
@@ -140,6 +167,12 @@ def run_scan_cycle() -> None:
             logger.info(
                 "%d oportunidades canceladas pre-EM (cuota/ROI) en este ciclo",
                 cancelled_pre_em,
+            )
+        if verified:
+            logger.info(
+                "Encolando top %d por ROI: %s",
+                len(verified),
+                ", ".join(f"{o.profit_percent:.2f}%" for o in verified),
             )
     else:
         logger.debug("Sin oportunidades nuevas; EM reordena/expira cola existente.")
@@ -213,24 +246,32 @@ def _start_fastapi_server() -> None:
 
 def main() -> int:
     global _scanner, _store, _min_profit_percent, _alert_max_age_seconds
+    global _max_alerts_per_cycle
 
     setup_logging()
     cfg = get_config()
     _min_profit_percent = float(cfg.min_profit_percent)
     _alert_max_age_seconds = float(cfg.alert_max_age_seconds)
+    _max_alerts_per_cycle = max(1, int(cfg.max_alerts_per_cycle))
 
     logger.info("arb-scanner starting")
+    from alerts.daily_plan import get_daily_profit_target, get_daily_risk_cap
+
     logger.info(
         "Config: interval=%ss min_profit=%.2f%% stake=%.2f queue_max=%d ttl=%ds "
-        "alert_max_age=%.0fs exp_day=%.0f exp_sim=%.0f books=%s",
+        "alert_max_age=%.0fs max_alerts/cycle=%d exp_day=%.0f exp_sim=%.0f "
+        "daily_target=%.0f risk_cap=%.0f books=%s",
         cfg.scan_interval_seconds,
         cfg.min_profit_percent,
         cfg.max_stake_total,
         cfg.execution_queue_max,
         cfg.execution_ttl_seconds,
         _alert_max_age_seconds,
+        _max_alerts_per_cycle,
         cfg.max_exposure_diaria,
         cfg.max_exposure_simultanea,
+        get_daily_profit_target(),
+        get_daily_risk_cap(),
         ", ".join(cfg.active_bookmakers),
     )
     logger.debug("Database path: %s", cfg.database_path)

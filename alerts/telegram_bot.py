@@ -13,6 +13,7 @@ from collections import Counter
 from typing import Any
 
 from alerts.buffer_agrupacion import BufferAgrupacion
+from alerts.daily_plan import apply_daily_plan, record_sent
 from alerts.endpoint_launcher import guardar_alerta_activa
 from alerts.enviar_telegram_launcher import (
     alerta_from_execution,
@@ -87,10 +88,23 @@ def _record(
 
 
 def _on_ganadora(alerta: dict) -> None:
-    # Re-check age after buffer window — odds may already be stale.
+    # Re-check age only if buffer delayed the send.
     if clasificar_alerta(alerta) == "DESCARTADA_EDAD":
         _count_discard("DESCARTADA_EDAD")
         _record(alerta, status="discarded", discard_reason="DESCARTADA_EDAD")
+        return
+
+    # Plan diario: tipo + riesgo/cupos (arb siempre prioritario).
+    ok_plan, tipo_plan, motivo_plan = apply_daily_plan(alerta)
+    if not ok_plan:
+        _count_discard("DESCARTADA_PLAN_DIARIO")
+        _record(alerta, status="discarded", discard_reason=f"PLAN:{motivo_plan}")
+        logger.info(
+            "Omitida por plan diario ejecucion=%s tipo=%s motivo=%s",
+            alerta.get("ejecucion"),
+            tipo_plan,
+            motivo_plan,
+        )
         return
 
     # Exposure check immediately before send
@@ -122,11 +136,14 @@ def _on_ganadora(alerta: dict) -> None:
         return
     try:
         enviar_alerta_con_launcher(token, chat, alerta)
+        record_sent(alerta, tipo_plan)
         _record(alerta, status="sent")
         logger.info(
-            "Alerta enviada ejecucion=%s roi=%s stake=%.2f partido=%s",
+            "Alerta enviada tipo=%s ejecucion=%s roi=%s score=%s stake=%.2f partido=%s",
+            tipo_plan,
             alerta.get("ejecucion"),
             alerta.get("roi"),
+            alerta.get("quality_score"),
             float(alerta.get("total_stake") or 0),
             alerta.get("partido"),
         )
@@ -147,7 +164,8 @@ def _on_descartadas(alertas: list[dict]) -> None:
 _buffer = BufferAgrupacion(
     on_ganadora=_on_ganadora,
     on_descartadas=_on_descartadas,
-    ventana_seg=float(os.getenv("BUFFER_VENTANA_SEG", "4.0")),
+    # 0 = envío inmediato (recomendado). >0 agrupa N segundos y elige mayor ROI.
+    ventana_seg=float(os.getenv("BUFFER_VENTANA_SEG", "0")),
     criterio="roi",
 )
 
@@ -185,10 +203,11 @@ def procesar_alerta_entrante(alerta: dict) -> str:
 
     age = edad_segundos(alerta)
     logger.debug(
-        "VALIDA_ENTRA_A_BUFFER ejecucion=%s roi=%s age=%.1fs",
+        "VALIDA→envio ejecucion=%s roi=%s age=%.1fs (buffer_ventana=%.1fs)",
         alerta.get("ejecucion"),
         alerta.get("roi"),
         age if age is not None else -1,
+        float(_buffer.ventana_seg),
     )
     _buffer.agregar_sync(alerta)
     return categoria
