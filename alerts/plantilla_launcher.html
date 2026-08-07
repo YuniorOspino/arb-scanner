@@ -180,6 +180,20 @@
     margin-bottom: 24px;
   }
   button.abrir:active { background: var(--green-press); }
+
+  #popup-aviso {
+    display: none;
+    margin: 16px 0 8px;
+    padding: 12px 14px;
+    border-radius: 10px;
+    background: #3b1d1d;
+    border: 1px solid #f87171;
+    color: #fecaca;
+    font-size: 14px;
+    line-height: 1.4;
+    font-weight: 600;
+  }
+  #popup-aviso.visible { display: block; }
 </style>
 </head>
 <body>
@@ -192,10 +206,13 @@
 
 <div id="casas"><!-- se llena con JS a partir de CASAS_JSON --></div>
 
+<div id="popup-aviso" role="alert"></div>
+
 <button class="abrir" onclick="abrirTodas()">🚀 Abrir todas las casas</button>
 
 <script>
   const CASAS = {{CASAS_JSON}};
+  const OPEN_DELAY_MS = 400;
 
   function esc(s) {
     return String(s ?? "")
@@ -203,6 +220,24 @@
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;");
+  }
+
+  function mostrarAvisoPopup(msg) {
+    const el = document.getElementById('popup-aviso');
+    if (!el) {
+      alert(msg);
+      return;
+    }
+    el.textContent = msg;
+    el.classList.add('visible');
+  }
+
+  function ocultarAvisoPopup() {
+    const el = document.getElementById('popup-aviso');
+    if (el) {
+      el.textContent = '';
+      el.classList.remove('visible');
+    }
   }
 
   const cont = document.getElementById('casas');
@@ -246,8 +281,40 @@
   }
 
   function abrirTodas() {
-    CASAS.forEach(c => {
-      if (c.link) window.open(c.link, '_blank');
+    ocultarAvisoPopup();
+
+    // Mayor stake primero (más urgente de colocar).
+    const ordenadas = [...CASAS].sort(
+      (a, b) => Number(b.stake || 0) - Number(a.stake || 0)
+    );
+    const conLink = ordenadas.filter(c => c && c.link);
+
+    if (!conLink.length) {
+      mostrarAvisoPopup('No hay links de casas para abrir en esta alerta.');
+      return;
+    }
+
+    let abiertas = 0;
+    let bloqueadas = 0;
+
+    conLink.forEach((c, i) => {
+      setTimeout(() => {
+        const win = window.open(c.link, '_blank', 'noopener,noreferrer');
+        // null / closed → popup bloqueado por el navegador
+        if (!win || win.closed) {
+          bloqueadas += 1;
+        } else {
+          abiertas += 1;
+        }
+
+        if (i === conLink.length - 1 && bloqueadas > 0) {
+          mostrarAvisoPopup(
+            'El navegador bloqueó ' + bloqueadas +
+            ' pestaña(s). Permite ventanas emergentes / pop-ups para este sitio ' +
+            'y pulsa de nuevo «Abrir todas las casas».'
+          );
+        }
+      }, i * OPEN_DELAY_MS);
     });
   }
 </script>

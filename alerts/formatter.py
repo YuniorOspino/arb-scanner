@@ -235,31 +235,53 @@ def _market_label(market_type: str) -> str:
     return m or "Mercado"
 
 
-def _event_link(bookmaker: str, event_name: str) -> str:
-    """Best-effort deep/search link to open the match quickly (alert-layer only)."""
-    key = str(bookmaker).strip().lower()
+def _event_search_queries(event_name: str) -> tuple[str, str, str]:
+    """
+    Build URL-encoded search strings from an event name.
+
+    Returns (query_vs, query_plain, query_home):
+      - "home vs away" (best for most CO search UIs)
+      - "home away"
+      - home team only (WPlay-style; often more reliable)
+    """
     home, away = _split_teams(event_name)
-    query = quote_plus(f"{home} {away}".strip())
+    home = (home or "").strip()
+    away = (away or "").strip()
+    if home and away and home != "equipo local":
+        q_vs = quote_plus(f"{home} vs {away}")
+        q_plain = quote_plus(f"{home} {away}")
+        q_home = quote_plus(home)
+    else:
+        fallback = quote_plus(str(event_name or "").strip())
+        q_vs = q_plain = q_home = fallback
+    return q_vs, q_plain, q_home
+
+
+def _event_link(bookmaker: str, event_name: str) -> str:
+    """Best-effort search link to open the match quickly (alert-layer only)."""
+    key = str(bookmaker).strip().lower()
+    q_vs, q_plain, q_home = _event_search_queries(event_name)
 
     if key == "betano":
-        return f"https://www.betano.co/search?q={query}"
+        # Official site search; "home vs away" matches listings better than bare concat.
+        return f"https://www.betano.co/search?q={q_vs}"
     if key == "betplay":
+        # Kambi SPA search (same surface as before, clearer query + hash route).
         return (
             "https://betplay.com.co/apuestas?"
-            f"searchTerm={query}#/search?query={query}"
+            f"searchTerm={q_vs}#/search?query={q_vs}"
         )
     if key == "rushbet":
-        return f"https://www.rushbet.co/?page=sportsbook&search={query}"
+        return f"https://www.rushbet.co/?page=sportsbook&search={q_vs}"
     if key == "wplay":
         # Official search form: GET /es/search?s=...
-        # (legacy ?search= on /FOOT/Fútbol returns ERROR 404)
-        # Full "home v away" often yields empty results; home team hits reliably.
-        team = (home or away or event_name).strip()
-        return f"https://apuestas.wplay.co/es/search?s={quote_plus(team)}"
+        # Full "home vs away" often yields empty results; home team hits reliably.
+        return f"https://apuestas.wplay.co/es/search?s={q_home}"
     if key == "zamba":
-        return f"https://www.zamba.co/deportes?search={query}"
+        # Deportes search: prefer "home vs away"; also keep plain names as q=.
+        return f"https://www.zamba.co/deportes?search={q_vs}&q={q_plain}"
     if key == "codere":
-        return f"https://m.codere.com.co/deportesCol/#/search/{query}"
+        return f"https://m.codere.com.co/deportesCol/#/search/{q_vs}"
     return _BOOK_HOME.get(key, "No disponible")
 
 
